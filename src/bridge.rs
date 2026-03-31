@@ -53,16 +53,19 @@ impl Bridge {
     /// Run the main bridge loop. Spawns two reader threads and dispatches on main thread.
     /// Returns on fatal error (serial disconnect, etc.).
     pub fn run(mut self) -> io::Result<()> {
+        log::debug!("bridge: creating channel");
         let (tx, rx) = mpsc::channel();
 
-        // Clone handles BEFORE moving into threads
+        log::debug!("bridge: cloning udp socket");
         let udp_reader = self.udp_socket.try_clone()?;
+        log::debug!("bridge: cloning serial port");
         let mut serial_reader = self.serial.try_clone()?;
 
-        // Set timeout on the read-side clone
+        log::debug!("bridge: setting serial timeout");
         serial_reader.set_timeout(SERIAL_READ_TIMEOUT)?;
 
         // Serial reader thread
+        log::debug!("bridge: spawning serial reader thread");
         let tx_serial = tx.clone();
         thread::Builder::new()
             .name("serial-reader".into())
@@ -94,6 +97,7 @@ impl Bridge {
                 }
             })?;
 
+        log::debug!("bridge: spawning udp reader thread");
         // UDP reader thread
         thread::Builder::new()
             .name("udp-reader".into())
@@ -115,14 +119,19 @@ impl Bridge {
                 }
             })?;
 
+        log::debug!("bridge: entering dispatch loop");
         // Main dispatch loop — owns serial write handle + UDP send socket
         for event in rx {
             match event {
                 BridgeEvent::SerialFrame(payload) => {
+                    log::debug!("bridge: got serial frame ({} bytes)", payload.len());
                     self.handle_serial_frame(&payload);
+                    log::debug!("bridge: serial frame handled");
                 }
                 BridgeEvent::UdpPacket(data) => {
+                    log::debug!("bridge: got udp packet ({} bytes)", data.len());
                     self.handle_udp_packet(&data);
+                    log::debug!("bridge: udp packet handled");
                 }
                 BridgeEvent::SerialError(e) => {
                     log::error!("serial error: {e}");
@@ -142,9 +151,12 @@ impl Bridge {
     }
 
     fn handle_serial_frame(&mut self, payload: &[u8]) {
-        let Some(packet) = crate::serial::decode_packet(payload) else {
+        log::debug!("bridge: decoding serial packet");
+        let Some(mut packet) = crate::serial::decode_packet(payload) else {
+            log::debug!("bridge: serial decode returned None");
             return;
         };
+        log::debug!("bridge: decoded serial packet id={:#010x}", packet.id);
 
         // Duplicate suppression: skip packets that originated from UDP multicast
         if packet.transport_mechanism == TransportMechanism::TransportMulticastUdp as i32 {
@@ -162,7 +174,9 @@ impl Bridge {
         self.encrypt_packet(&mut packet);
 
         // Re-serialize the MeshPacket and send to UDP multicast
+        log::debug!("bridge: encoding packet for udp");
         let data = packet.encode_to_vec();
+        log::debug!("bridge: sending to udp multicast");
         match udp::send_multicast(
             &self.udp_socket,
             &data,
