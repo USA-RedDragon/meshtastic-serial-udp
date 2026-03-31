@@ -10,6 +10,7 @@ pub fn setup_multicast_socket(
 ) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    socket.set_reuse_port(true)?;
 
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
 
@@ -17,6 +18,9 @@ pub fn setup_multicast_socket(
     socket.join_multicast_v4(&multicast_addr, &iface)?;
     socket.set_multicast_ttl_v4(1)?;
     socket.set_multicast_loop_v4(false)?;
+    if let Some(addr) = interface {
+        socket.set_multicast_if_v4(&addr)?;
+    }
 
     Ok(UdpSocket::from(socket))
 }

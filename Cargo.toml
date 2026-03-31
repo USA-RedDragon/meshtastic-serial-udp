@@ -10,7 +10,7 @@ log = "=0.4.29"
 prost = "=0.14.3"
 rand = "=0.10.0"
 serialport = "=4.9.0"
-socket2 = "=0.6.3"
+socket2 = { version = "=0.6.3", features = ["all"] }
 
 [build-dependencies]
 prost-build = "=0.14.3"
