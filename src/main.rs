@@ -89,4 +89,9 @@ fn main() {
 
     let bridge = Bridge::new(serial, udp_socket, config);
 
+    log::info!("bridge running");
+    if let Err(e) = bridge.run() {
+        log::error!("bridge exited with error: {e}");
+        process::exit(1);
+    }
 }
