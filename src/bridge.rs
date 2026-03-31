@@ -13,12 +13,14 @@ use crate::udp;
 
 const RECENT_IDS_CAPACITY: usize = 64;
 const SERIAL_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub enum BridgeEvent {
     SerialFrame(Vec<u8>),
     UdpPacket(Vec<u8>),
     SerialError(io::Error),
     UdpError(io::Error),
+    Tick,
 }
 
 pub struct BridgeConfig {
@@ -98,6 +100,7 @@ impl Bridge {
             })?;
 
         log::debug!("bridge: spawning udp reader thread");
+        let tx_heartbeat = tx.clone();
         // UDP reader thread
         thread::Builder::new()
             .name("udp-reader".into())
@@ -119,7 +122,19 @@ impl Bridge {
                 }
             })?;
 
+        // Heartbeat timer thread
+        log::debug!("bridge: spawning heartbeat timer thread");
+        thread::Builder::new()
+            .name("heartbeat-timer".into())
+            .spawn(move || loop {
+                thread::sleep(HEARTBEAT_INTERVAL);
+                if tx_heartbeat.send(BridgeEvent::Tick).is_err() {
+                    return;
+                }
+            })?;
+
         log::debug!("bridge: entering dispatch loop");
+        let mut heartbeat_nonce: u32 = 0;
         // Main dispatch loop — owns serial write handle + UDP send socket
         for event in rx {
             match event {
@@ -140,6 +155,24 @@ impl Bridge {
                 BridgeEvent::UdpError(e) => {
                     log::error!("UDP error: {e}");
                     return Err(e);
+                }
+                BridgeEvent::Tick => {
+                    heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
+                    let hb = crate::meshtastic_proto::ToRadio {
+                        payload_variant: Some(
+                            crate::meshtastic_proto::to_radio::PayloadVariant::Heartbeat(
+                                crate::meshtastic_proto::Heartbeat {
+                                    nonce: heartbeat_nonce,
+                                },
+                            ),
+                        ),
+                    };
+                    let payload = hb.encode_to_vec();
+                    let frame = crate::serial_framing::frame_payload(&payload);
+                    match self.serial.write_all(&frame) {
+                        Ok(()) => log::debug!("sent serial heartbeat (nonce={heartbeat_nonce})"),
+                        Err(e) => log::error!("failed to send heartbeat: {e}"),
+                    }
                 }
             }
         }
