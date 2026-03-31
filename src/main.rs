@@ -7,6 +7,7 @@ mod meshtastic_proto {
 
 use std::net::Ipv4Addr;
 use std::process;
+use std::time::Duration;
 
 use clap::Parser;
 
@@ -38,6 +39,23 @@ struct Cli {
 fn main() {
     env_logger::init();
     let cli = Cli::parse();
+
+    log::info!(
+        "opening serial port {} at {} baud",
+        cli.port,
+        cli.baud
+    );
+
+    let serial = match serialport::new(&cli.port, cli.baud)
+        .timeout(Duration::from_millis(500))
+        .open()
+    {
+        Ok(port) => port,
+        Err(e) => {
+            log::error!("failed to open serial port {}: {e}", cli.port);
+            process::exit(1);
+        }
+    };
 
     log::info!(
         "setting up UDP multicast on {}:{}",
