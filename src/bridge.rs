@@ -6,7 +6,8 @@ use std::thread;
 
 use prost::Message;
 
-use crate::meshtastic_proto::mesh_packet::TransportMechanism;
+use crate::crypto::{self, ChannelKey};
+use crate::meshtastic_proto::mesh_packet::{PayloadVariant, TransportMechanism};
 use crate::serial_framing::FrameReader;
 use crate::udp;
 
@@ -30,6 +31,7 @@ pub struct Bridge {
     udp_socket: UdpSocket,
     config: BridgeConfig,
     recent_ids: VecDeque<u32>,
+    channels: Vec<ChannelKey>,
 }
 
 impl Bridge {
@@ -37,12 +39,14 @@ impl Bridge {
         serial: Box<dyn serialport::SerialPort>,
         udp_socket: UdpSocket,
         config: BridgeConfig,
+        channels: Vec<ChannelKey>,
     ) -> Self {
         Self {
             serial,
             udp_socket,
             config,
             recent_ids: VecDeque::with_capacity(RECENT_IDS_CAPACITY),
+            channels,
         }
     }
 
@@ -148,6 +152,15 @@ impl Bridge {
             return;
         }
 
+        // Track this id so that if the UDP multicast echoes back, handle_udp_packet rejects it
+        if self.recent_ids.len() >= RECENT_IDS_CAPACITY {
+            self.recent_ids.pop_front();
+        }
+        self.recent_ids.push_back(packet.id);
+
+        // Encrypt decoded payload before sending to UDP (so Raven sees standard encrypted packets)
+        self.encrypt_packet(&mut packet);
+
         // Re-serialize the MeshPacket and send to UDP multicast
         let data = packet.encode_to_vec();
         match udp::send_multicast(
@@ -166,13 +179,13 @@ impl Bridge {
     }
 
     fn handle_udp_packet(&mut self, data: &[u8]) {
-        let Some(packet) = udp::decode_packet(data) else {
+        let Some(mut packet) = udp::decode_packet(data) else {
             return;
         };
 
-        // Duplicate suppression: skip packets we recently sent to serial
+        // Duplicate suppression: skip packets we recently forwarded (from serial or UDP)
         if self.recent_ids.contains(&packet.id) {
-            log::debug!("skipping recently-sent packet echo (id={:#010x})", packet.id);
+            log::debug!("skipping recently-seen packet echo (id={:#010x})", packet.id);
             return;
         }
 
@@ -182,10 +195,90 @@ impl Bridge {
         }
         self.recent_ids.push_back(packet.id);
 
+        // Decrypt encrypted payload before sending to serial (radio expects decoded packets)
+        self.decrypt_packet(&mut packet);
+
+        // Stamp origin so firmware and downstream bridges know this came from UDP
+        packet.transport_mechanism = TransportMechanism::TransportMulticastUdp as i32;
+
         match crate::serial::write_packet(&mut *self.serial, packet) {
             Ok(()) => log::debug!("UDP->serial: forwarded packet"),
             Err(e) => log::error!("failed to write to serial: {e}"),
         }
+    }
+
+    /// Encrypt a decoded packet: convert payload_variant from Decoded to Encrypted,
+    /// and replace the channel index with the channel hash.
+    fn encrypt_packet(&self, packet: &mut crate::meshtastic_proto::MeshPacket) {
+        let decoded_bytes = match &packet.payload_variant {
+            Some(PayloadVariant::Decoded(data)) => data.encode_to_vec(),
+            _ => return, // already encrypted or empty — pass through
+        };
+
+        let channel_index = packet.channel;
+        let Some(ck) = self.channels.iter().find(|c| c.index == channel_index) else {
+            log::warn!(
+                "no channel key for index {}, sending decoded",
+                channel_index
+            );
+            return;
+        };
+
+        if ck.key.is_empty() {
+            return; // no encryption configured for this channel
+        }
+
+        let ciphertext = crypto::encrypt_aes_ctr(&ck.key, packet.from, packet.id, &decoded_bytes);
+        packet.payload_variant = Some(PayloadVariant::Encrypted(ciphertext));
+        packet.channel = ck.hash;
+        log::debug!(
+            "encrypted packet: channel index {} -> hash {}",
+            channel_index,
+            ck.hash
+        );
+    }
+
+    /// Decrypt an encrypted packet: convert payload_variant from Encrypted to Decoded,
+    /// and replace the channel hash with the local channel index.
+    fn decrypt_packet(&self, packet: &mut crate::meshtastic_proto::MeshPacket) {
+        let ciphertext = match &packet.payload_variant {
+            Some(PayloadVariant::Encrypted(data)) => data.clone(),
+            _ => return, // already decoded or empty — pass through
+        };
+
+        let channel_hash = packet.channel;
+
+        // Find matching channel by hash. Try each matching channel's key.
+        for ck in &self.channels {
+            if ck.hash != channel_hash {
+                continue;
+            }
+            if ck.key.is_empty() {
+                continue;
+            }
+
+            let plaintext =
+                crypto::decrypt_aes_ctr(&ck.key, packet.from, packet.id, &ciphertext);
+
+            // Try to decode as a Data message to verify decryption succeeded
+            if crate::meshtastic_proto::Data::decode(plaintext.as_slice()).is_ok() {
+                packet.payload_variant = Some(PayloadVariant::Decoded(
+                    crate::meshtastic_proto::Data::decode(plaintext.as_slice()).unwrap(),
+                ));
+                packet.channel = ck.index;
+                log::debug!(
+                    "decrypted packet: channel hash {} -> index {}",
+                    channel_hash,
+                    ck.index
+                );
+                return;
+            }
+        }
+
+        log::debug!(
+            "could not decrypt packet with channel hash {}, forwarding as-is",
+            channel_hash
+        );
     }
 }
 
@@ -233,6 +326,7 @@ mod tests {
             udp_socket: sender,
             config,
             recent_ids: VecDeque::with_capacity(RECENT_IDS_CAPACITY),
+            channels: vec![],
         };
 
         (bridge, mock, receiver)
@@ -430,5 +524,60 @@ mod tests {
 
         let written = mock.take_written();
         assert!(written.is_empty(), "should not write malformed data to serial");
+    }
+
+    // --- Echo-loop prevention tests ---
+
+    #[test]
+    fn test_serial_frame_adds_to_recent_ids_preventing_udp_echo() {
+        let (mut bridge, mock, _receiver) = test_bridge();
+
+        // Simulate a LoRa packet arriving via serial
+        let packet = make_mesh_packet(0xDEAD);
+        let from_radio = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(
+                meshtastic_proto::from_radio::PayloadVariant::Packet(packet),
+            ),
+        };
+        let payload = from_radio.encode_to_vec();
+        bridge.handle_serial_frame(&payload);
+
+        // Now the same packet ID arrives from UDP (multicast echo)
+        let echo_packet = make_mesh_packet(0xDEAD);
+        bridge.handle_udp_packet(&echo_packet.encode_to_vec());
+
+        // Should NOT have written the echo to serial
+        let written = mock.take_written();
+        assert!(written.is_empty(), "UDP echo of serial packet should be rejected");
+    }
+
+    #[test]
+    fn test_udp_packet_stamps_transport_mechanism() {
+        let (mut bridge, mock, _receiver) = test_bridge();
+
+        let packet = make_mesh_packet(0xBEAD);
+        bridge.handle_udp_packet(&packet.encode_to_vec());
+
+        let written = mock.take_written();
+        assert!(!written.is_empty());
+
+        // Unframe and decode the ToRadio wrapper
+        let mut reader = serial_framing::FrameReader::new();
+        let frames = reader.feed_bytes(&written);
+        assert_eq!(frames.len(), 1);
+
+        let to_radio = meshtastic_proto::ToRadio::decode(frames[0].as_slice()).unwrap();
+        match to_radio.payload_variant {
+            Some(meshtastic_proto::to_radio::PayloadVariant::Packet(p)) => {
+                assert_eq!(p.id, 0xBEAD);
+                assert_eq!(
+                    p.transport_mechanism,
+                    meshtastic_proto::mesh_packet::TransportMechanism::TransportMulticastUdp as i32,
+                    "packet forwarded from UDP should be stamped with TransportMulticastUdp"
+                );
+            }
+            other => panic!("expected Packet variant, got {other:?}"),
+        }
     }
 }

@@ -1,4 +1,5 @@
 mod bridge;
+mod crypto;
 mod serial;
 mod serial_framing;
 mod udp;
@@ -85,12 +86,15 @@ fn main() {
 
     log::info!("performing serial handshake...");
     let mut serial = serial;
-    if let Err(e) = serial::handshake(&mut *serial) {
-        log::error!("handshake failed: {e}");
-        process::exit(1);
-    }
+    let channels = match serial::handshake(&mut *serial) {
+        Ok(ch) => ch,
+        Err(e) => {
+            log::error!("handshake failed: {e}");
+            process::exit(1);
+        }
+    };
 
-    let bridge = Bridge::new(serial, udp_socket, config);
+    let bridge = Bridge::new(serial, udp_socket, config, channels);
 
     log::info!("bridge running");
     if let Err(e) = bridge.run() {

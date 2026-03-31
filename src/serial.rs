@@ -2,6 +2,7 @@ use std::io;
 
 use prost::Message;
 
+use crate::crypto::ChannelKey;
 use crate::meshtastic_proto;
 use crate::serial_framing::{self, FrameReader};
 
@@ -39,15 +40,17 @@ pub fn write_packet(
 }
 
 /// Perform the serial handshake with the default 30-second timeout.
-pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<()> {
+/// Returns the list of channel keys captured during the config dump.
+pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<Vec<ChannelKey>> {
     handshake_with_timeout(serial, HANDSHAKE_TIMEOUT)
 }
 
 /// Perform the serial handshake: send want_config_id and wait for matching config_complete_id.
+/// Captures Channel messages sent by the radio during the config dump.
 pub fn handshake_with_timeout(
     serial: &mut dyn serialport::SerialPort,
     timeout: std::time::Duration,
-) -> io::Result<()> {
+) -> io::Result<Vec<ChannelKey>> {
     let config_id: u32 = rand::random();
     log::info!("starting handshake with want_config_id={config_id}");
 
@@ -63,6 +66,7 @@ pub fn handshake_with_timeout(
     let deadline = std::time::Instant::now() + timeout;
     let mut reader = FrameReader::new();
     let mut buf = [0u8; 1];
+    let mut channels: Vec<ChannelKey> = Vec::new();
 
     loop {
         if std::time::Instant::now() > deadline {
@@ -87,10 +91,35 @@ pub fn handshake_with_timeout(
                                 match variant {
                                     meshtastic_proto::from_radio::PayloadVariant::ConfigCompleteId(id) => {
                                         if id == config_id {
-                                            log::info!("handshake complete");
-                                            return Ok(());
+                                            log::info!(
+                                                "handshake complete, captured {} channel(s)",
+                                                channels.len()
+                                            );
+                                            return Ok(channels);
                                         }
                                         log::warn!("config_complete_id mismatch: got {id}, expected {config_id}");
+                                    }
+                                    meshtastic_proto::from_radio::PayloadVariant::Channel(ch) => {
+                                        let role = ch.role;
+                                        // Role 0 = DISABLED, 1 = PRIMARY, 2 = SECONDARY
+                                        if role == 1 || role == 2 {
+                                            if let Some(settings) = &ch.settings {
+                                                let ck = crate::crypto::channel_key_from_proto(
+                                                    ch.index as u32,
+                                                    &settings.name,
+                                                    &settings.psk,
+                                                );
+                                                log::info!(
+                                                    "channel {}: name={:?} role={} hash={} key_len={}",
+                                                    ck.index,
+                                                    ck.name,
+                                                    if role == 1 { "PRIMARY" } else { "SECONDARY" },
+                                                    ck.hash,
+                                                    ck.key.len(),
+                                                );
+                                                channels.push(ck);
+                                            }
+                                        }
                                     }
                                     _ => {
                                         log::debug!("handshake: ignoring non-config FromRadio");
