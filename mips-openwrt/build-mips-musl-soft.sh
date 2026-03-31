@@ -2,13 +2,13 @@
 set -euo pipefail
 
 IMAGE_NAME="mips-sf-rust"
-TARGET_JSON="mips-unknown-linux-musl-soft.json"
+TARGET_JSON="mips-openwrt/mips-unknown-linux-musl-soft.json"
 PROFILE="release-cross"
 
 # Build the Docker image if it doesn't exist
 if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     echo "==> Building soft-float MIPS toolchain Docker image (one-time)..."
-    docker build -t "$IMAGE_NAME" -f Dockerfile.mips-softfloat .
+    docker build -t "$IMAGE_NAME" -f mips-openwrt/Dockerfile.mips-softfloat .
 fi
 
 echo "==> Building meshtastic-serial-udp for MIPS soft-float..."
@@ -35,7 +35,7 @@ file "$BINARY"
 # Verify zero hard-float instructions
 echo "==> Checking for hardware float instructions..."
 COUNT=$(docker run --rm \
-    -v "$(pwd)/target:/target" \
+    -v "$(pwd)/../target:/target" \
     "$IMAGE_NAME" \
     bash -c "mips-linux-muslsf-objdump -d /target/mips-unknown-linux-musl-soft/$PROFILE/meshtastic-serial-udp \
     | grep -c -E '\blwc1|swc1|mtc1|mfc1|add\.s|mul\.s|div\.s|cvt\.|mov\.s\b'" \
