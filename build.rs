@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_root = PathBuf::from("proto/meshtastic-protobufs");
+    let proto_root = PathBuf::from("meshtastic-protobufs");
 
     let proto_files = [
         "meshtastic/mesh.proto",
