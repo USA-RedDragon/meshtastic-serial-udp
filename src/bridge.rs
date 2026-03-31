@@ -192,6 +192,53 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meshtastic_proto;
+    use crate::serial_framing;
+    use crate::test_util::MockSerialPort;
+    use serialport::SerialPort as _;
+
+    fn make_mesh_packet(id: u32) -> meshtastic_proto::MeshPacket {
+        meshtastic_proto::MeshPacket {
+            id,
+            from: 0x1234,
+            to: 0xFFFFFFFF,
+            ..Default::default()
+        }
+    }
+
+    /// Create a Bridge with a MockSerialPort and a localhost UDP pair.
+    /// Returns (bridge, mock_serial, udp_receiver).
+    /// The bridge's UDP socket sends to the receiver's address.
+    fn test_bridge() -> (Bridge, MockSerialPort, UdpSocket) {
+        let mock = MockSerialPort::new();
+        let serial_clone = mock.try_clone().unwrap();
+
+        // Receiver socket — binds to a random port on localhost
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let receiver_addr = receiver.local_addr().unwrap();
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .unwrap();
+
+        // Sender socket — the bridge will send_to the receiver's address
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        let config = BridgeConfig {
+            multicast_addr: Ipv4Addr::LOCALHOST,
+            udp_port: receiver_addr.port(),
+        };
+
+        let bridge = Bridge {
+            serial: serial_clone,
+            udp_socket: sender,
+            config,
+            recent_ids: VecDeque::with_capacity(RECENT_IDS_CAPACITY),
+        };
+
+        (bridge, mock, receiver)
+    }
+
+    // --- Existing dedup tests ---
 
     #[test]
     fn test_recent_ids_eviction() {
@@ -217,5 +264,171 @@ mod tests {
         assert!(ids.contains(&42));
         assert!(ids.contains(&99));
         assert!(!ids.contains(&100));
+    }
+
+    // --- handle_serial_frame tests ---
+
+    #[test]
+    fn test_serial_frame_forwards_to_udp() {
+        let (mut bridge, _mock, receiver) = test_bridge();
+
+        let packet = make_mesh_packet(0xBEEF);
+        let from_radio = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(
+                meshtastic_proto::from_radio::PayloadVariant::Packet(packet),
+            ),
+        };
+        let payload = from_radio.encode_to_vec();
+
+        bridge.handle_serial_frame(&payload);
+
+        // Verify something arrived on the receiver
+        let mut buf = [0u8; 600];
+        let (n, _addr) = receiver.recv_from(&mut buf).expect("should receive UDP data");
+
+        // Decode as MeshPacket
+        let received = meshtastic_proto::MeshPacket::decode(&buf[..n]).unwrap();
+        assert_eq!(received.id, 0xBEEF);
+        assert_eq!(received.from, 0x1234);
+    }
+
+    #[test]
+    fn test_serial_frame_skips_udp_echo() {
+        let (mut bridge, _mock, receiver) = test_bridge();
+
+        let mut packet = make_mesh_packet(0xCAFE);
+        packet.transport_mechanism =
+            crate::meshtastic_proto::mesh_packet::TransportMechanism::TransportMulticastUdp as i32;
+
+        let from_radio = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(
+                meshtastic_proto::from_radio::PayloadVariant::Packet(packet),
+            ),
+        };
+        let payload = from_radio.encode_to_vec();
+
+        bridge.handle_serial_frame(&payload);
+
+        // Should NOT have sent anything
+        let mut buf = [0u8; 600];
+        let result = receiver.recv_from(&mut buf);
+        assert!(result.is_err(), "should not receive anything for UDP echo");
+    }
+
+    #[test]
+    fn test_serial_frame_ignores_non_packet() {
+        let (mut bridge, _mock, receiver) = test_bridge();
+
+        let from_radio = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(
+                meshtastic_proto::from_radio::PayloadVariant::ConfigCompleteId(42),
+            ),
+        };
+        let payload = from_radio.encode_to_vec();
+
+        bridge.handle_serial_frame(&payload);
+
+        let mut buf = [0u8; 600];
+        let result = receiver.recv_from(&mut buf);
+        assert!(result.is_err(), "should not forward non-packet variant");
+    }
+
+    #[test]
+    fn test_serial_frame_malformed() {
+        let (mut bridge, _mock, receiver) = test_bridge();
+
+        // Feed garbage — should not panic
+        bridge.handle_serial_frame(&[0xFF, 0xFE, 0xFD]);
+
+        let mut buf = [0u8; 600];
+        let result = receiver.recv_from(&mut buf);
+        assert!(result.is_err(), "should not forward malformed data");
+    }
+
+    // --- handle_udp_packet tests ---
+
+    #[test]
+    fn test_udp_packet_forwards_to_serial() {
+        let (mut bridge, mock, _receiver) = test_bridge();
+
+        let packet = make_mesh_packet(0xFACE);
+        let data = packet.encode_to_vec();
+
+        bridge.handle_udp_packet(&data);
+
+        let written = mock.take_written();
+        assert!(!written.is_empty(), "should have written to serial");
+
+        // Unframe
+        let mut reader = serial_framing::FrameReader::new();
+        let frames = reader.feed_bytes(&written);
+        assert_eq!(frames.len(), 1);
+
+        // Decode ToRadio
+        let to_radio = meshtastic_proto::ToRadio::decode(frames[0].as_slice()).unwrap();
+        match to_radio.payload_variant {
+            Some(meshtastic_proto::to_radio::PayloadVariant::Packet(p)) => {
+                assert_eq!(p.id, 0xFACE);
+                assert_eq!(p.from, 0x1234);
+            }
+            other => panic!("expected Packet variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_udp_packet_dedup_skips_repeat() {
+        let (mut bridge, mock, _receiver) = test_bridge();
+
+        let packet = make_mesh_packet(0xAAAA);
+        let data = packet.encode_to_vec();
+
+        // First call — should write
+        bridge.handle_udp_packet(&data);
+        let written1 = mock.take_written();
+        assert!(!written1.is_empty());
+
+        // Second call with same ID — should NOT write
+        bridge.handle_udp_packet(&data);
+        let written2 = mock.take_written();
+        assert!(written2.is_empty(), "duplicate ID should be suppressed");
+    }
+
+    #[test]
+    fn test_udp_packet_dedup_eviction() {
+        let (mut bridge, mock, _receiver) = test_bridge();
+
+        // Fill 64 unique IDs
+        for i in 0..RECENT_IDS_CAPACITY as u32 {
+            let packet = make_mesh_packet(i);
+            bridge.handle_udp_packet(&packet.encode_to_vec());
+        }
+        mock.take_written(); // drain
+
+        // Resend ID 0 — it should have been evicted (still present, since we sent exactly 64)
+        // Actually with exactly 64 IDs (0..63), capacity is full but no eviction yet.
+        // Send one more to trigger eviction of ID 0.
+        let extra = make_mesh_packet(999);
+        bridge.handle_udp_packet(&extra.encode_to_vec());
+        mock.take_written(); // drain
+
+        // Now ID 0 has been evicted — resending it should forward
+        let packet = make_mesh_packet(0);
+        bridge.handle_udp_packet(&packet.encode_to_vec());
+        let written = mock.take_written();
+        assert!(!written.is_empty(), "evicted ID should be forwarded again");
+    }
+
+    #[test]
+    fn test_udp_packet_malformed() {
+        let (mut bridge, mock, _receiver) = test_bridge();
+
+        // Feed garbage — should not panic
+        bridge.handle_udp_packet(&[0xFF, 0xFE, 0xFD]);
+
+        let written = mock.take_written();
+        assert!(written.is_empty(), "should not write malformed data to serial");
     }
 }

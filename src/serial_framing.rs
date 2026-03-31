@@ -170,4 +170,102 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert!(frames[0].is_empty());
     }
+
+    #[test]
+    fn test_frame_exact_max_size() {
+        let data = vec![0xAB; MAX_PACKET_SIZE]; // exactly 512 bytes
+        let framed = frame_payload(&data);
+        let mut reader = FrameReader::new();
+        let frames = reader.feed_bytes(&framed);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0], data);
+    }
+
+    #[test]
+    fn test_frame_one_over_max() {
+        let mut reader = FrameReader::new();
+        // Header claiming 513 bytes
+        let header = [START1, START2, 0x02, 0x01]; // length = 513
+        let frames = reader.feed_bytes(&header);
+        assert!(frames.is_empty());
+
+        // Reader should have reset — verify it can still parse a valid frame
+        let data = b"recovery";
+        let framed = frame_payload(data);
+        let frames = reader.feed_bytes(&framed);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0], data);
+    }
+
+    #[test]
+    fn test_start_bytes_inside_payload() {
+        // Payload that contains the START1+START2 sequence
+        let data: Vec<u8> = vec![0x01, START1, START2, 0x02, START1, 0xFF];
+        let framed = frame_payload(&data);
+        let mut reader = FrameReader::new();
+        let frames = reader.feed_bytes(&framed);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0], data);
+    }
+
+    #[test]
+    fn test_garbage_between_valid_frames() {
+        let data1 = b"first";
+        let data2 = b"second";
+        let mut stream = frame_payload(data1);
+        stream.extend_from_slice(&[0xFF, 0xFE, 0xFD, 0x94, 0x00]); // garbage with partial START1
+        stream.extend_from_slice(&frame_payload(data2));
+
+        let mut reader = FrameReader::new();
+        let frames = reader.feed_bytes(&stream);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0], data1);
+        assert_eq!(frames[1], data2);
+    }
+
+    #[test]
+    fn test_feed_vs_feed_bytes_equivalence() {
+        let data1 = b"alpha";
+        let data2 = b"beta";
+        let mut stream = frame_payload(data1);
+        stream.extend_from_slice(&[0xFF, 0x00]); // garbage
+        stream.extend_from_slice(&frame_payload(data2));
+
+        // feed_bytes
+        let mut reader1 = FrameReader::new();
+        let frames_bulk = reader1.feed_bytes(&stream);
+
+        // feed one-at-a-time
+        let mut reader2 = FrameReader::new();
+        let mut frames_single = Vec::new();
+        for &byte in &stream {
+            if let Some(payload) = reader2.feed(byte) {
+                frames_single.push(payload);
+            }
+        }
+
+        assert_eq!(frames_bulk, frames_single);
+    }
+
+    #[test]
+    fn test_frame_payload_oversized_input() {
+        // frame_payload doesn't enforce the limit, but FrameReader should reject it
+        let big = vec![0xCC; MAX_PACKET_SIZE + 1]; // 513 bytes
+        let framed = frame_payload(&big);
+
+        // Verify the header encodes length 513
+        assert_eq!(framed[2], 0x02);
+        assert_eq!(framed[3], 0x01);
+
+        let mut reader = FrameReader::new();
+        let frames = reader.feed_bytes(&framed);
+        assert!(frames.is_empty(), "FrameReader should reject >512 byte frames");
+
+        // Reader recovers for subsequent valid frames
+        let data = b"ok";
+        let framed = frame_payload(data);
+        let frames = reader.feed_bytes(&framed);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0], data);
+    }
 }

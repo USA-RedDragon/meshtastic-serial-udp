@@ -3,6 +3,9 @@ mod serial;
 mod serial_framing;
 mod udp;
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 mod meshtastic_proto {
     #![allow(dead_code)]
     include!(concat!(env!("OUT_DIR"), "/meshtastic.rs"));

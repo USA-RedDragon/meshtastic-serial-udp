@@ -41,3 +41,44 @@ pub fn send_multicast(
 ) -> io::Result<usize> {
     socket.send_to(data, SocketAddrV4::new(multicast_addr, port))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+
+    fn make_mesh_packet(id: u32) -> crate::meshtastic_proto::MeshPacket {
+        crate::meshtastic_proto::MeshPacket {
+            id,
+            from: 0xABCD,
+            to: 0xFFFFFFFF,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_udp_decode_valid() {
+        let packet = make_mesh_packet(0x1234);
+        let bytes = packet.encode_to_vec();
+        let result = decode_packet(&bytes);
+        assert!(result.is_some());
+        let decoded = result.unwrap();
+        assert_eq!(decoded.id, 0x1234);
+        assert_eq!(decoded.from, 0xABCD);
+        assert_eq!(decoded.to, 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn test_udp_decode_malformed() {
+        assert!(decode_packet(&[0xFF, 0xFE, 0xFD, 0xFC]).is_none());
+    }
+
+    #[test]
+    fn test_udp_decode_empty() {
+        // Empty bytes decode to a default MeshPacket (all zero fields) — prost considers this valid
+        let result = decode_packet(&[]);
+        // An empty buffer decodes to a default MeshPacket with id=0
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, 0);
+    }
+}
