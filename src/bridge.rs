@@ -157,7 +157,7 @@ impl Bridge {
             self.config.udp_port,
         ) {
             Ok(_) => log::debug!(
-                "serial→UDP: forwarded packet id={:#010x} ({} bytes)",
+                "serial->UDP: forwarded packet id={:#010x} ({} bytes)",
                 packet.id,
                 data.len()
             ),
@@ -183,7 +183,7 @@ impl Bridge {
         self.recent_ids.push_back(packet.id);
 
         match crate::serial::write_packet(&mut *self.serial, packet) {
-            Ok(()) => log::debug!("UDP→serial: forwarded packet"),
+            Ok(()) => log::debug!("UDP->serial: forwarded packet"),
             Err(e) => log::error!("failed to write to serial: {e}"),
         }
     }
