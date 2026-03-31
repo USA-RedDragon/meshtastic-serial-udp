@@ -1,4 +1,4 @@
-use std::io::{self};
+use std::io;
 
 use prost::Message;
 
@@ -6,6 +6,37 @@ use crate::meshtastic_proto;
 use crate::serial_framing::{self, FrameReader};
 
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Decode a serial frame payload (FromRadio) and extract the inner MeshPacket, if present.
+pub fn decode_packet(payload: &[u8]) -> Option<meshtastic_proto::MeshPacket> {
+    match meshtastic_proto::FromRadio::decode(payload) {
+        Ok(from_radio) => match from_radio.payload_variant {
+            Some(meshtastic_proto::from_radio::PayloadVariant::Packet(p)) => Some(p),
+            Some(_) => {
+                log::debug!("ignoring non-packet FromRadio variant");
+                None
+            }
+            None => None,
+        },
+        Err(e) => {
+            log::warn!("failed to decode FromRadio: {e}");
+            None
+        }
+    }
+}
+
+/// Wrap a MeshPacket in ToRadio, frame it, and write to the serial port.
+pub fn write_packet(
+    serial: &mut dyn serialport::SerialPort,
+    packet: meshtastic_proto::MeshPacket,
+) -> io::Result<()> {
+    let to_radio = meshtastic_proto::ToRadio {
+        payload_variant: Some(meshtastic_proto::to_radio::PayloadVariant::Packet(packet)),
+    };
+    let payload = to_radio.encode_to_vec();
+    let frame = serial_framing::frame_payload(&payload);
+    serial.write_all(&frame)
+}
 
 /// Perform the serial handshake: send want_config_id and wait for matching config_complete_id.
 pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<()> {

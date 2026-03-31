@@ -21,6 +21,18 @@ pub fn setup_multicast_socket(
     Ok(UdpSocket::from(socket))
 }
 
+/// Decode raw UDP bytes as a MeshPacket.
+pub fn decode_packet(data: &[u8]) -> Option<crate::meshtastic_proto::MeshPacket> {
+    use prost::Message;
+    match crate::meshtastic_proto::MeshPacket::decode(data) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            log::warn!("failed to decode MeshPacket from UDP: {e}");
+            None
+        }
+    }
+}
+
 pub fn send_multicast(
     socket: &UdpSocket,
     data: &[u8],
