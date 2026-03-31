@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::mpsc;
@@ -8,6 +9,7 @@ use prost::Message;
 use crate::serial_framing::FrameReader;
 use crate::udp;
 
+const RECENT_IDS_CAPACITY: usize = 64;
 const SERIAL_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Value of MeshPacket.TransportMechanism.TRANSPORT_MULTICAST_UDP
@@ -29,6 +31,7 @@ pub struct Bridge {
     serial: Box<dyn serialport::SerialPort>,
     udp_socket: UdpSocket,
     config: BridgeConfig,
+    recent_ids: VecDeque<u32>,
 }
 
 impl Bridge {
@@ -41,6 +44,7 @@ impl Bridge {
             serial,
             udp_socket,
             config,
+            recent_ids: VecDeque::with_capacity(RECENT_IDS_CAPACITY),
         }
     }
 
@@ -168,9 +172,52 @@ impl Bridge {
             return;
         };
 
+        // Duplicate suppression: skip packets we recently sent to serial
+        if self.recent_ids.contains(&packet.id) {
+            log::debug!("skipping recently-sent packet echo (id={:#010x})", packet.id);
+            return;
+        }
+
+        // Track this id
+        if self.recent_ids.len() >= RECENT_IDS_CAPACITY {
+            self.recent_ids.pop_front();
+        }
+        self.recent_ids.push_back(packet.id);
+
         match crate::serial::write_packet(&mut *self.serial, packet) {
             Ok(()) => log::debug!("UDP→serial: forwarded packet"),
             Err(e) => log::error!("failed to write to serial: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recent_ids_eviction() {
+        let mut ids: VecDeque<u32> = VecDeque::with_capacity(RECENT_IDS_CAPACITY);
+        for i in 0..=RECENT_IDS_CAPACITY as u32 {
+            if ids.len() >= RECENT_IDS_CAPACITY {
+                ids.pop_front();
+            }
+            ids.push_back(i);
+        }
+        // First ID (0) should have been evicted
+        assert!(!ids.contains(&0));
+        // Last ID should be present
+        assert!(ids.contains(&(RECENT_IDS_CAPACITY as u32)));
+        assert_eq!(ids.len(), RECENT_IDS_CAPACITY);
+    }
+
+    #[test]
+    fn test_recent_ids_dedup() {
+        let mut ids: VecDeque<u32> = VecDeque::with_capacity(RECENT_IDS_CAPACITY);
+        ids.push_back(42);
+        ids.push_back(99);
+        assert!(ids.contains(&42));
+        assert!(ids.contains(&99));
+        assert!(!ids.contains(&100));
     }
 }
