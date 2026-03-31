@@ -1,0 +1,3 @@
+#!/bin/sh
+/etc/init.d/meshtastic-serial-udp restart
+exit 0

@@ -1,0 +1,4 @@
+#!/bin/sh
+/etc/init.d/meshtastic-serial-udp stop
+/etc/init.d/meshtastic-serial-udp disable
+exit 0

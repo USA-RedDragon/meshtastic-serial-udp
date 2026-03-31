@@ -1,0 +1,4 @@
+#!/bin/sh
+/etc/init.d/meshtastic-serial-udp enable
+/etc/init.d/meshtastic-serial-udp start
+exit 0
