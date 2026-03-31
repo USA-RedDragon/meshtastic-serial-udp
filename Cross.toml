@@ -1,0 +1,9 @@
+[target.mips-unknown-linux-musl]
+image = "messense/rust-musl-cross:mips-musl@sha256:928cce375c145104c78ecf72e55e29073f48d576805a25a12fccd37947e56cee"
+pre-build = ["""
+    apt-get update -qq && apt-get install -y -qq curl unzip \
+    && curl -sSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip \
+    && unzip -q /tmp/protoc.zip -d /usr/local bin/protoc \
+    && chmod +x /usr/local/bin/protoc \
+    && rm /tmp/protoc.zip
+"""]
