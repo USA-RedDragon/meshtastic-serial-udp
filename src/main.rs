@@ -1,4 +1,6 @@
 mod bridge;
+mod serial;
+mod serial_framing;
 mod udp;
 
 mod meshtastic_proto {
@@ -78,6 +80,13 @@ fn main() {
         udp_port: cli.udp_port,
     };
 
-    let mut bridge = Bridge::new(serial, udp_socket, config);
+    log::info!("performing serial handshake...");
+    let mut serial = serial;
+    if let Err(e) = serial::handshake(&mut *serial) {
+        log::error!("handshake failed: {e}");
+        process::exit(1);
+    }
+
+    let bridge = Bridge::new(serial, udp_socket, config);
 
 }
