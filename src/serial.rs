@@ -38,8 +38,16 @@ pub fn write_packet(
     serial.write_all(&frame)
 }
 
-/// Perform the serial handshake: send want_config_id and wait for matching config_complete_id.
+/// Perform the serial handshake with the default 30-second timeout.
 pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<()> {
+    handshake_with_timeout(serial, HANDSHAKE_TIMEOUT)
+}
+
+/// Perform the serial handshake: send want_config_id and wait for matching config_complete_id.
+pub fn handshake_with_timeout(
+    serial: &mut dyn serialport::SerialPort,
+    timeout: std::time::Duration,
+) -> io::Result<()> {
     let config_id: u32 = rand::random();
     log::info!("starting handshake with want_config_id={config_id}");
 
@@ -52,7 +60,7 @@ pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<()> {
     let frame = serial_framing::frame_payload(&payload);
     serial.write_all(&frame)?;
 
-    let deadline = std::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
     let mut reader = FrameReader::new();
     let mut buf = [0u8; 1];
 
