@@ -6,14 +6,12 @@ use std::thread;
 
 use prost::Message;
 
+use crate::meshtastic_proto::mesh_packet::TransportMechanism;
 use crate::serial_framing::FrameReader;
 use crate::udp;
 
 const RECENT_IDS_CAPACITY: usize = 64;
 const SERIAL_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// Value of MeshPacket.TransportMechanism.TRANSPORT_MULTICAST_UDP
-const TRANSPORT_MULTICAST_UDP: i32 = 6;
 
 pub enum BridgeEvent {
     SerialFrame(Vec<u8>),
@@ -145,7 +143,7 @@ impl Bridge {
         };
 
         // Duplicate suppression: skip packets that originated from UDP multicast
-        if packet.transport_mechanism == TRANSPORT_MULTICAST_UDP {
+        if packet.transport_mechanism == TransportMechanism::TransportMulticastUdp as i32 {
             log::debug!("skipping UDP-originated echo (id={:#010x})", packet.id);
             return;
         }
