@@ -1,9 +1,12 @@
+mod udp;
+
 mod meshtastic_proto {
     #![allow(dead_code)]
     include!(concat!(env!("OUT_DIR"), "/meshtastic.rs"));
 }
 
 use std::net::Ipv4Addr;
+use std::process;
 
 use clap::Parser;
 
@@ -35,4 +38,18 @@ struct Cli {
 fn main() {
     env_logger::init();
     let cli = Cli::parse();
+
+    log::info!(
+        "setting up UDP multicast on {}:{}",
+        cli.udp_addr,
+        cli.udp_port
+    );
+
+    let udp_socket = match udp::setup_multicast_socket(cli.udp_addr, cli.udp_port, cli.interface) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("failed to setup UDP multicast socket: {e}");
+            process::exit(1);
+        }
+    };
 }
