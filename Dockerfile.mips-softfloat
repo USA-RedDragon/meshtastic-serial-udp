@@ -1,0 +1,38 @@
+# Stage 1: Build a soft-float MIPS musl cross toolchain
+FROM debian:bookworm-slim AS toolchain-builder
+
+RUN apt-get update && apt-get install -y \
+    build-essential file git curl wget patch \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build musl-cross-make with soft-float
+RUN git clone --depth 1 https://github.com/richfelker/musl-cross-make.git /build/musl-cross-make
+WORKDIR /build/musl-cross-make
+
+# Configure for soft-float MIPS big-endian
+RUN printf 'TARGET = mips-linux-muslsf\n\
+GCC_CONFIG = --with-float=soft\n\
+COMMON_CONFIG += --disable-nls\n\
+GCC_CONFIG += --disable-libquadmath --disable-decimal-float\n\
+OUTPUT = /opt/mips-sf\n' > config.mak
+
+RUN make -j$(nproc) install
+
+# Stage 2: Rust cross-compilation image
+FROM rust:slim-bookworm
+
+# Copy the soft-float toolchain
+COPY --from=toolchain-builder /opt/mips-sf /opt/mips-sf
+ENV PATH="/opt/mips-sf/bin:${PATH}"
+
+# Install protoc and other tools
+RUN apt-get update && apt-get install -y -qq curl unzip && \
+    curl -sSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip && \
+    unzip -q /tmp/protoc.zip -d /usr/local bin/protoc && \
+    chmod +x /usr/local/bin/protoc && \
+    rm /tmp/protoc.zip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install nightly and rust-src for build-std
+RUN rustup toolchain install nightly && \
+    rustup component add rust-src --toolchain nightly

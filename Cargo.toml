@@ -1,3 +1,5 @@
+cargo-features = ["panic-immediate-abort"]
+
 [package]
 name = "meshtastic-serial-udp"
 version = "0.1.0"
@@ -23,8 +25,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# For targets where pre-built rust-std lacks LLVM bitcode and panic_abort
+# For cross-compiled targets using build-std (std built from source)
 [profile.release-cross]
 inherits = "release"
-panic = "unwind"
-lto = false
+panic = "immediate-abort"
