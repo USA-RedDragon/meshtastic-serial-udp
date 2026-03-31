@@ -1,3 +1,4 @@
+mod bridge;
 mod udp;
 
 mod meshtastic_proto {
@@ -10,6 +11,7 @@ use std::process;
 use std::time::Duration;
 
 use clap::Parser;
+use bridge::{Bridge, BridgeConfig};
 
 #[derive(Parser)]
 #[command(name = "meshtastic-serial-udp")]
@@ -70,4 +72,12 @@ fn main() {
             process::exit(1);
         }
     };
+
+    let config = BridgeConfig {
+        multicast_addr: cli.udp_addr,
+        udp_port: cli.udp_port,
+    };
+
+    let mut bridge = Bridge::new(serial, udp_socket, config);
+
 }
