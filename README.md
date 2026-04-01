@@ -6,6 +6,22 @@ A lightweight Rust bridge that connects a USB-serial Meshtastic radio to the loc
 
 This was designed to be as lightweight as possible in order to fit on resource-constrained routers running OpenWRT, but it of course also works on any platform with Rust support and a serial connection to a Meshtastic radio.
 
+## Installation
+
+To integrate with Raven, you'll need Raven release 0.0.1 r7681671 or later. After installing Raven, you'll need to enable the Meshtastic bridge in Raven's configuration file (`/usr/local/raven/raven.conf`) by adding the following section:
+
+```bash
+"meshtastic": { "address": "127.0.0.1" }
+```
+
+This will bind Raven's multicast UDP listener to the loopback interface, allowing it to receive packets from this bridge running on the same machine.
+
+After adding the above configuration, `service raven restart` to apply the changes.
+
+We require `kmod-usb-acm` to be installed for the appropriate USB-serial drivers. You can install it with `opkg install kmod-usb-acm`.
+
+Then, the relevant .ipk/.apk file for your device can be found on the [releases page](https://github.com/USA-RedDragon/meshtastic-serial-udp/releases/latest). After installation, this service should start right away. You can check its status with `service meshtastic-serial-udp status` and view logs with `logread -e meshtastic-serial-udp`. After plugging in and powering on your Meshtastic radio, this program should automatically detect it, perform the serial handshake, and start relaying packets between the radio and the local network.
+
 ## How it works
 
 The bridge opens a serial connection to a Meshtastic radio and joins a UDP multicast group (default `224.0.0.69:4403`). It then performs the Meshtastic serial handshake to retrieve channel configuration (names, PSKs, channel hashes) from the radio.
