@@ -20,13 +20,16 @@ print_arch_list() {
 ARCH_LIST
 }
 
+# renovate: datasource=docker depName=ghcr.io/USA-RedDragon/rust-cross
+RUST_VERSION="1.94.1"
+IMAGE_NAME="ghcr.io/usa-reddragon/rust-cross:${RUST_VERSION}"
+
 configure_arch() {
     local arch="$1"
     case "$arch" in
         mips_24kc)
             MUSL_TARGET="mips-linux-muslsf"
             GCC_EXTRA_CONFIG="--with-float=soft"
-            IMAGE_NAME="aredn-rust-mips-24kc"
             RUST_TARGET_ARG="mips-unknown-linux-musl"
             RUST_TARGET_DIR="mips-unknown-linux-musl"
             CARGO_EXTRA_FLAGS=""
@@ -40,7 +43,6 @@ configure_arch() {
         mipsel_24kc)
             MUSL_TARGET="mipsel-linux-muslsf"
             GCC_EXTRA_CONFIG="--with-float=soft"
-            IMAGE_NAME="aredn-rust-mipsel-24kc"
             RUST_TARGET_ARG="mipsel-unknown-linux-musl"
             RUST_TARGET_DIR="mipsel-unknown-linux-musl"
             CARGO_EXTRA_FLAGS=""
@@ -54,7 +56,6 @@ configure_arch() {
         arm_cortex-a7_neon-vfpv4)
             MUSL_TARGET="arm-linux-musleabihf"
             GCC_EXTRA_CONFIG="--with-arch=armv7-a --with-fpu=neon-vfpv4 --with-float=hard"
-            IMAGE_NAME="aredn-rust-arm-cortex-a7"
             RUST_TARGET_ARG="armv7-unknown-linux-musleabihf"
             RUST_TARGET_DIR="armv7-unknown-linux-musleabihf"
             CARGO_EXTRA_FLAGS=""
@@ -68,7 +69,6 @@ configure_arch() {
         aarch64_cortex-a53)
             MUSL_TARGET="aarch64-linux-musl"
             GCC_EXTRA_CONFIG=""
-            IMAGE_NAME="aredn-rust-aarch64"
             RUST_TARGET_ARG="aarch64-unknown-linux-musl"
             RUST_TARGET_DIR="aarch64-unknown-linux-musl"
             CARGO_EXTRA_FLAGS=""
@@ -82,7 +82,6 @@ configure_arch() {
         x86_64)
             MUSL_TARGET="x86_64-linux-musl"
             GCC_EXTRA_CONFIG=""
-            IMAGE_NAME="aredn-rust-x86-64"
             RUST_TARGET_ARG="x86_64-unknown-linux-musl"
             RUST_TARGET_DIR="x86_64-unknown-linux-musl"
             CARGO_EXTRA_FLAGS=""
@@ -101,20 +100,6 @@ configure_arch() {
 }
 
 # ---------------------------------------------------------------------------
-# Build the toolchain Docker image for a configured architecture
-# ---------------------------------------------------------------------------
-build_docker_image() {
-    local arch="$1"
-    local project_root="$2"
-
-    echo "==> [$arch] Building toolchain Docker image..."
-    docker build -t "$IMAGE_NAME" \
-        --build-arg MUSL_TARGET="$MUSL_TARGET" \
-        --build-arg GCC_EXTRA_CONFIG="$GCC_EXTRA_CONFIG" \
-        -f "$project_root/hack/Dockerfile.cross" "$project_root"
-}
-
-# ---------------------------------------------------------------------------
 # Run a cargo command inside the toolchain container
 #
 # Usage: run_cargo <project_root> <cargo_args...>
@@ -128,6 +113,7 @@ run_cargo() {
         docker run --rm \
             -v "$project_root":/src \
             -w /src \
+            -e "MUSL_TARGET=$MUSL_TARGET" \
             ${LINKER_ENV:+-e "$LINKER_ENV"} \
             ${EXTRA_RUSTFLAGS:+-e "RUSTFLAGS=$EXTRA_RUSTFLAGS"} \
             ${RUNNER_ENV:+-e "$RUNNER_ENV"} \
@@ -145,6 +131,7 @@ run_cargo() {
         docker run --rm \
             -v "$project_root":/src \
             -w /src \
+            -e "MUSL_TARGET=$MUSL_TARGET" \
             ${LINKER_ENV:+-e "$LINKER_ENV"} \
             ${EXTRA_RUSTFLAGS:+-e "RUSTFLAGS=$EXTRA_RUSTFLAGS"} \
             ${RUNNER_ENV:+-e "$RUNNER_ENV"} \

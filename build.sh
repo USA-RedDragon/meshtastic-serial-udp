@@ -45,8 +45,6 @@ build_arch() {
     echo "==> [$arch] Building $PKG_NAME"
     echo "================================================================"
 
-    build_docker_image "$arch" "$PROJECT_ROOT"
-
     echo "==> [$arch] Compiling..."
     run_cargo "$PROJECT_ROOT" "build" "$CARGO_EXTRA_FLAGS" "--profile" "$PROFILE"
 

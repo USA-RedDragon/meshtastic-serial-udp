@@ -41,8 +41,6 @@ test_arch() {
     echo "==> [$arch] Testing"
     echo "================================================================"
 
-    build_docker_image "$arch" "$PROJECT_ROOT"
-
     echo "==> [$arch] Running tests..."
     run_cargo "$PROJECT_ROOT" "test"
 
