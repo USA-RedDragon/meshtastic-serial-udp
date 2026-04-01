@@ -120,21 +120,21 @@ jobs:
           configure_arch "${{ matrix.arch }}"
           echo "path=./target/${RUST_TARGET_DIR}/release/meshtastic-serial-udp" >> $GITHUB_OUTPUT
       - name: Upload binary
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ matrix.arch }}-bin
           retention-days: 1
           if-no-files-found: error
           path: ${{ steps.binary.outputs.path }}
       - name: Upload apk artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: openwrt-${{ matrix.arch }}-apk
           retention-days: 1
           if-no-files-found: error
           path: ./openwrt/meshtastic-serial-udp_${{ matrix.arch }}.apk
       - name: Upload ipk artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: openwrt-${{ matrix.arch }}-ipk
           retention-days: 1
