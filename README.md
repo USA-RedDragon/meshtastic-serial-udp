@@ -1,6 +1,6 @@
-[![codecov](https://codecov.io/gh/USA-RedDragon/meshtastic-serial-udp/graph/badge.svg?token=klhxi5s9gw)](https://codecov.io/gh/USA-RedDragon/meshtastic-serial-udp)
-
 # meshtastic-serial-udp
+
+[![codecov](https://codecov.io/gh/USA-RedDragon/meshtastic-serial-udp/graph/badge.svg?token=klhxi5s9gw)](https://codecov.io/gh/USA-RedDragon/meshtastic-serial-udp) [![License](https://badgen.net/github/license/USA-RedDragon/meshtastic-serial-udp)](https://github.com/USA-RedDragon/meshtastic-serial-udp/blob/main/LICENSE) [![Release](https://img.shields.io/github/release/USA-RedDragon/meshtastic-serial-udp.svg)](https://github.com/USA-RedDragon/meshtastic-serial-udp/releases/)
 
 A lightweight Rust bridge that connects a USB-serial Meshtastic radio to the local network via UDP multicast. This enables applications like [Raven](https://github.com/KN6PLV/Raven) and other Meshtastic-over-LAN clients to interact with the radio without needing a LAN-capable Meshtastic device.
 
