@@ -111,6 +111,7 @@ run_cargo() {
 
     if [ "$USE_BUILD_STD" -eq 1 ]; then
         docker run --rm \
+            --user "$(id -u):$(id -g)" \
             -v "$project_root":/src \
             -w /src \
             -e "MUSL_TARGET=$MUSL_TARGET" \
@@ -121,7 +122,8 @@ run_cargo() {
             "$IMAGE_NAME" \
             bash -c '
                 GCC_LIB_DIR=$($MUSL_TARGET-gcc -print-libgcc-file-name | xargs dirname)
-                cp "${GCC_LIB_DIR}/libgcc_eh.a" "${GCC_LIB_DIR}/libunwind.a"
+                cp "${GCC_LIB_DIR}/libgcc_eh.a" /tmp/libunwind.a
+                export RUSTFLAGS="${RUSTFLAGS} -C link-arg=-L/tmp"
 
                 cargo +nightly '"$cargo_args"' \
                     -Z build-std=std,panic_abort \
@@ -129,6 +131,7 @@ run_cargo() {
             '
     else
         docker run --rm \
+            --user "$(id -u):$(id -g)" \
             -v "$project_root":/src \
             -w /src \
             -e "MUSL_TARGET=$MUSL_TARGET" \
@@ -139,7 +142,8 @@ run_cargo() {
             "$IMAGE_NAME" \
             bash -c '
                 GCC_LIB_DIR=$($MUSL_TARGET-gcc -print-libgcc-file-name | xargs dirname)
-                cp "${GCC_LIB_DIR}/libgcc_eh.a" "${GCC_LIB_DIR}/libunwind.a"
+                cp "${GCC_LIB_DIR}/libgcc_eh.a" /tmp/libunwind.a
+                export RUSTFLAGS="${RUSTFLAGS} -C link-arg=-L/tmp"
 
                 cargo '"$cargo_args"' \
                     --target '"$RUST_TARGET_ARG"'
