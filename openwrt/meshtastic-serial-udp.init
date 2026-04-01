@@ -27,7 +27,8 @@ start_service()
 }
 
 stop_service() {
-    procd_kill_instance meshtastic-serial-udp
+    kill -1 $(cat /var/run/meshtastic-serial-udp.pid)
+    while pidof meshtastic-serial-udp > /dev/null; do sleep 1; done
 }
 
 restart() {
