@@ -18,7 +18,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROFILE="release-cross"
+PROFILE="release"
 PKG_NAME="meshtastic-serial-udp"
 PKG_VER=0.1.0
 PKG_REL="r$(($(date +%s) - $(date -d '2026-01-01 00:00:00' +%s)))"
@@ -55,7 +55,7 @@ fi
 #
 # Sets: MUSL_TARGET, GCC_EXTRA_CONFIG, IMAGE_NAME, RUST_TARGET_ARG,
 #        RUST_TARGET_DIR, CARGO_EXTRA_FLAGS, LINKER_ENV, VERIFY_SOFT_FLOAT,
-#        PKG_ARCH
+#        USE_BUILD_STD, PKG_ARCH
 # ---------------------------------------------------------------------------
 configure_arch() {
     local arch="$1"
@@ -64,22 +64,26 @@ configure_arch() {
             MUSL_TARGET="mips-linux-muslsf"
             GCC_EXTRA_CONFIG="--with-float=soft"
             IMAGE_NAME="aredn-rust-mips-24kc"
-            RUST_TARGET_ARG="/src/openwrt/mips-unknown-linux-musl-soft.json"
-            RUST_TARGET_DIR="mips-unknown-linux-musl-soft"
-            CARGO_EXTRA_FLAGS="-Z json-target-spec"
-            LINKER_ENV=""
+            RUST_TARGET_ARG="mips-unknown-linux-musl"
+            RUST_TARGET_DIR="mips-unknown-linux-musl"
+            CARGO_EXTRA_FLAGS=""
+            LINKER_ENV="CARGO_TARGET_MIPS_UNKNOWN_LINUX_MUSL_LINKER=mips-linux-muslsf-gcc"
+            EXTRA_RUSTFLAGS="-C target-feature=+crt-static -C link-self-contained=no"
             VERIFY_SOFT_FLOAT=1
+            USE_BUILD_STD=1
             PKG_ARCH="mips_24kc"
             ;;
         mipsel_24kc)
             MUSL_TARGET="mipsel-linux-muslsf"
             GCC_EXTRA_CONFIG="--with-float=soft"
             IMAGE_NAME="aredn-rust-mipsel-24kc"
-            RUST_TARGET_ARG="/src/openwrt/mipsel-unknown-linux-musl-soft.json"
-            RUST_TARGET_DIR="mipsel-unknown-linux-musl-soft"
-            CARGO_EXTRA_FLAGS="-Z json-target-spec"
-            LINKER_ENV=""
+            RUST_TARGET_ARG="mipsel-unknown-linux-musl"
+            RUST_TARGET_DIR="mipsel-unknown-linux-musl"
+            CARGO_EXTRA_FLAGS=""
+            LINKER_ENV="CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER=mipsel-linux-muslsf-gcc"
+            EXTRA_RUSTFLAGS="-C target-feature=+crt-static -C link-self-contained=no"
             VERIFY_SOFT_FLOAT=1
+            USE_BUILD_STD=1
             PKG_ARCH="mipsel_24kc"
             ;;
         arm_cortex-a7_neon-vfpv4)
@@ -90,7 +94,9 @@ configure_arch() {
             RUST_TARGET_DIR="armv7-unknown-linux-musleabihf"
             CARGO_EXTRA_FLAGS=""
             LINKER_ENV="CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=arm-linux-musleabihf-gcc"
+            EXTRA_RUSTFLAGS="-C link-self-contained=no -C link-arg=-lgcc"
             VERIFY_SOFT_FLOAT=0
+            USE_BUILD_STD=0
             PKG_ARCH="arm_cortex-a7_neon-vfpv4"
             ;;
         aarch64_cortex-a53)
@@ -101,7 +107,9 @@ configure_arch() {
             RUST_TARGET_DIR="aarch64-unknown-linux-musl"
             CARGO_EXTRA_FLAGS=""
             LINKER_ENV="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc"
+            EXTRA_RUSTFLAGS="-C link-self-contained=no"
             VERIFY_SOFT_FLOAT=0
+            USE_BUILD_STD=0
             PKG_ARCH="aarch64_cortex-a53"
             ;;
         x86_64)
@@ -112,7 +120,9 @@ configure_arch() {
             RUST_TARGET_DIR="x86_64-unknown-linux-musl"
             CARGO_EXTRA_FLAGS=""
             LINKER_ENV="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc"
+            EXTRA_RUSTFLAGS="-C link-self-contained=no"
             VERIFY_SOFT_FLOAT=0
+            USE_BUILD_STD=0
             PKG_ARCH="x86_64"
             ;;
         *)
@@ -135,32 +145,54 @@ build_arch() {
     echo "================================================================"
 
     # -- Docker image -------------------------------------------------------
-    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-        echo "==> [$arch] Building toolchain Docker image (one-time)..."
-        docker build -t "$IMAGE_NAME" \
-            --build-arg MUSL_TARGET="$MUSL_TARGET" \
-            --build-arg GCC_EXTRA_CONFIG="$GCC_EXTRA_CONFIG" \
-            -f "$SCRIPT_DIR/Dockerfile.cross" "$PROJECT_ROOT"
-    fi
+    echo "==> [$arch] Building toolchain Docker image..."
+    docker build -t "$IMAGE_NAME" \
+        --build-arg MUSL_TARGET="$MUSL_TARGET" \
+        --build-arg GCC_EXTRA_CONFIG="$GCC_EXTRA_CONFIG" \
+        -f "$SCRIPT_DIR/Dockerfile.cross" "$PROJECT_ROOT"
 
     # -- Compile ------------------------------------------------------------
     echo "==> [$arch] Compiling..."
-    docker run --rm \
-        -v "$PROJECT_ROOT":/src \
-        -w /src \
-        ${LINKER_ENV:+-e "$LINKER_ENV"} \
-        "$IMAGE_NAME" \
-        bash -c '
-            # Create empty libunwind.a stub — std links -lunwind even with panic=abort
-            GCC_LIB_DIR=$($MUSL_TARGET-gcc -print-libgcc-file-name | xargs dirname)
-            $MUSL_TARGET-ar rcs "${GCC_LIB_DIR}/libunwind.a"
+    if [ "$USE_BUILD_STD" -eq 1 ]; then
+        # MIPS targets are Tier 3 — no pre-built std, requires nightly + build-std
+        docker run --rm \
+            -v "$PROJECT_ROOT":/src \
+            -w /src \
+            ${LINKER_ENV:+-e "$LINKER_ENV"} \
+            ${EXTRA_RUSTFLAGS:+-e "RUSTFLAGS=$EXTRA_RUSTFLAGS"} \
+            "$IMAGE_NAME" \
+            bash -c '
+                # Provide libunwind.a from GCC exception handling library —
+                # std links -lunwind for backtrace support even with panic=abort
+                GCC_LIB_DIR=$($MUSL_TARGET-gcc -print-libgcc-file-name | xargs dirname)
+                cp "${GCC_LIB_DIR}/libgcc_eh.a" "${GCC_LIB_DIR}/libunwind.a"
 
-            cargo +nightly build \
-                -Z build-std=std,panic_abort \
-                '"$CARGO_EXTRA_FLAGS"' \
-                --target '"$RUST_TARGET_ARG"' \
-                --profile '"$PROFILE"'
-        '
+                cargo +nightly build \
+                    -Z build-std=std,panic_abort \
+                    '"$CARGO_EXTRA_FLAGS"' \
+                    --target '"$RUST_TARGET_ARG"' \
+                    --profile '"$PROFILE"'
+            '
+    else
+        # Tier 2 targets — pre-built std available, use stable toolchain
+        docker run --rm \
+            -v "$PROJECT_ROOT":/src \
+            -w /src \
+            ${LINKER_ENV:+-e "$LINKER_ENV"} \
+            ${EXTRA_RUSTFLAGS:+-e "RUSTFLAGS=$EXTRA_RUSTFLAGS"} \
+            "$IMAGE_NAME" \
+            bash -c '
+                # Provide libunwind.a from GCC exception handling library —
+                # std links -lunwind for backtrace support even with panic=abort
+                GCC_LIB_DIR=$($MUSL_TARGET-gcc -print-libgcc-file-name | xargs dirname)
+                cp "${GCC_LIB_DIR}/libgcc_eh.a" "${GCC_LIB_DIR}/libunwind.a"
+
+                cargo build \
+                    '"$CARGO_EXTRA_FLAGS"' \
+                    --target '"$RUST_TARGET_ARG"' \
+                    --profile '"$PROFILE"'
+            '
+    fi
 
     BINARY="$PROJECT_ROOT/target/$RUST_TARGET_DIR/$PROFILE/$PKG_NAME"
 

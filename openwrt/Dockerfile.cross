@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y \
 RUN git clone --depth 1 https://github.com/richfelker/musl-cross-make.git /build/musl-cross-make
 WORKDIR /build/musl-cross-make
 
-RUN printf 'TARGET = %s\nGCC_CONFIG = %s\nCOMMON_CONFIG += --disable-nls\nGCC_CONFIG += --disable-libquadmath --disable-decimal-float\nOUTPUT = /opt/cross\n' \
+RUN printf 'TARGET = %s\nGCC_CONFIG = %s\nCOMMON_CONFIG += --disable-nls\nGCC_CONFIG += --disable-libquadmath --disable-decimal-float\nCOMMON_CONFIG += CFLAGS="-g0 -O2" CXXFLAGS="-g0 -O2"\nMUSL_CONFIG += CFLAGS="-g0 -O2" CXXFLAGS="-g0 -O2"\nMUSL_CONFIG += CFLAGS="-fPIC -O2"\nGNU_SITE = https://ftp.gnu.org/gnu\nDL_CMD = curl -fSL --retry 5 --retry-delay 3 --retry-all-errors -o\nOUTPUT = /opt/cross\n' \
     "${MUSL_TARGET}" "${GCC_EXTRA_CONFIG}" > config.mak && \
     cat config.mak
 
@@ -46,7 +46,13 @@ RUN apt-get update && apt-get install -y -qq curl unzip && \
     rm /tmp/protoc.zip && \
     rm -rf /var/lib/apt/lists/*
 
-# Install nightly + rust-src (required for -Z build-std)
+# Tier 2 targets — pre-built std available on stable
+RUN rustup target add \
+    armv7-unknown-linux-musleabihf \
+    aarch64-unknown-linux-musl \
+    x86_64-unknown-linux-musl
+
+# Tier 3 targets (MIPS) — no pre-built std, requires nightly + build-std
 RUN rustup toolchain install nightly && \
     rustup component add rust-src --toolchain nightly
 
