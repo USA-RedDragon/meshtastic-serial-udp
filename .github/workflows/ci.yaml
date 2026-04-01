@@ -32,19 +32,43 @@ jobs:
         run: |
           ./test.sh ${{ matrix.arch }}
 
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - name: Install Rust nightly
+        run: |
+          rustup toolchain install nightly --component llvm-tools-preview
+          rustup default nightly
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Generate coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5.5.4
+        if: always()
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+
   test-results:
     if: always()
-    needs: [ test ]
+    needs: [ test, coverage ]
     runs-on: ubuntu-24.04
     steps:
       - run: |
-          result="${{ needs.test.result }}"
-          if [[ "$result" == "success" || "$result" == "skipped" ]]; then
-            echo "All tests passed"
-          else
-            echo "One or more tests failed" >&2
-            exit 1
-          fi
+          results=("${{ needs.test.result }}" "${{ needs.coverage.result }}")
+          for result in "${results[@]}"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "One or more jobs failed" >&2
+              exit 1
+            fi
+          done
+          echo "All tests passed"
 
   version:
     name: Determine version
