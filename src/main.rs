@@ -22,6 +22,7 @@ use bridge::{Bridge, BridgeConfig};
 #[derive(Parser)]
 #[command(name = "meshtastic-serial-udp")]
 #[command(about = "Bridge a USB-serial Meshtastic radio to UDP multicast (Meshtastic over LAN)")]
+#[command(version = concat!(env!("PKG_VERSION"), " (", env!("GIT_COMMIT"), ")"))]
 struct Cli {
     /// Serial port path (e.g. /dev/ttyUSB0 or COM3)
     #[arg(short, long)]
@@ -47,6 +48,12 @@ struct Cli {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
+
+    log::info!(
+        "meshtastic-serial-udp v{} ({})",
+        env!("PKG_VERSION"),
+        env!("GIT_COMMIT"),
+    );
 
     log::info!(
         "opening serial port {} at {} baud",

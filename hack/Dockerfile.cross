@@ -39,7 +39,7 @@ COPY --from=toolchain-builder /opt/cross /opt/cross
 ENV PATH="/opt/cross/bin:${PATH}"
 
 # Install protoc (x86_64 host binary — runs on build machine only)
-RUN apt-get update && apt-get install -y -qq curl unzip && \
+RUN apt-get update && apt-get install -y -qq curl unzip qemu-user-static && \
     curl -sSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip && \
     unzip -q /tmp/protoc.zip -d /usr/local bin/protoc && \
     chmod +x /usr/local/bin/protoc && \

@@ -2,42 +2,31 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Multi-architecture build + packaging for AREDN OpenWrt
+# Package pre-built binaries as OpenWrt IPK + APK
 #
 # Usage:
-#   ./build.sh <arch>       Build one architecture
-#   ./build.sh all          Build all AREDN architectures
+#   ./openwrt/build.sh <arch>       Package one architecture
+#   ./openwrt/build.sh all          Package all AREDN architectures
 #
-# Architectures correspond to AREDN SUPPORTED_DEVICES.md targets:
-#   mips_24kc                  ath79        (Ubiquiti, TP-Link, Mikrotik, GL.iNet)
-#   mipsel_24kc                ramips       (GL-MT1300, HaLow, Cudy TR1200)
-#   arm_cortex-a7_neon-vfpv4   ipq40xx      (Mikrotik hAP ac2/ac3, GL-B1300)
-#   aarch64_cortex-a53         mediatek     (OpenWrt One, Cudy TR3000)
-#   x86_64                     x86/64       (VMware, Proxmox, VirtualBox, Bhyve)
+# Expects binaries already built under target/<rust-target>/release/.
+# Typically called by the root build.sh after compiling.
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROFILE="release"
 PKG_NAME="meshtastic-serial-udp"
-PKG_VER=0.1.0
-PKG_REL="r$(($(date +%s) - $(date -d '2026-01-01 00:00:00' +%s)))"
-PKG_VERSION="${PKG_VER}-${PKG_REL}"
+PKG_VERSION="${PKG_VERSION:-0.0.0}"
 
-ALL_ARCHES="mips_24kc mipsel_24kc arm_cortex-a7_neon-vfpv4 aarch64_cortex-a53 x86_64"
+# shellcheck source=../hack/arch-config.sh
+source "$PROJECT_ROOT/hack/arch-config.sh"
 
 usage() {
-    cat <<EOF
-Usage: $(basename "$0") <arch|all>
-
-Architectures:
-  mips_24kc                  ath79 — Ubiquiti, TP-Link, Mikrotik SXT/LHG/LDF, GL.iNet
-  mipsel_24kc                ramips — GL-MT1300, HaLowLink, Heltec, Alfa Tube-AHM, Cudy TR1200
-  arm_cortex-a7_neon-vfpv4   ipq40xx — Mikrotik hAP ac2/ac3, SXTsq 5ac, GL-B1300
-  aarch64_cortex-a53         mediatek/filogic — OpenWrt One, Cudy TR3000
-  x86_64                     x86/64 — VMware ESXi, Proxmox, VirtualBox, Bhyve
-  all                        Build all of the above
-EOF
+    echo "Usage: $(basename "$0") <arch|all>"
+    echo ""
+    echo "Architectures:"
+    print_arch_list
+    echo "  all                        Package all of the above"
     exit 1
 }
 
@@ -51,173 +40,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Per-architecture configuration
-#
-# Sets: MUSL_TARGET, GCC_EXTRA_CONFIG, IMAGE_NAME, RUST_TARGET_ARG,
-#        RUST_TARGET_DIR, CARGO_EXTRA_FLAGS, LINKER_ENV, VERIFY_SOFT_FLOAT,
-#        USE_BUILD_STD, PKG_ARCH
+# Package one architecture
 # ---------------------------------------------------------------------------
-configure_arch() {
-    local arch="$1"
-    case "$arch" in
-        mips_24kc)
-            MUSL_TARGET="mips-linux-muslsf"
-            GCC_EXTRA_CONFIG="--with-float=soft"
-            IMAGE_NAME="aredn-rust-mips-24kc"
-            RUST_TARGET_ARG="mips-unknown-linux-musl"
-            RUST_TARGET_DIR="mips-unknown-linux-musl"
-            CARGO_EXTRA_FLAGS=""
-            LINKER_ENV="CARGO_TARGET_MIPS_UNKNOWN_LINUX_MUSL_LINKER=mips-linux-muslsf-gcc"
-            EXTRA_RUSTFLAGS="-C target-feature=+crt-static -C link-self-contained=no"
-            VERIFY_SOFT_FLOAT=1
-            USE_BUILD_STD=1
-            PKG_ARCH="mips_24kc"
-            ;;
-        mipsel_24kc)
-            MUSL_TARGET="mipsel-linux-muslsf"
-            GCC_EXTRA_CONFIG="--with-float=soft"
-            IMAGE_NAME="aredn-rust-mipsel-24kc"
-            RUST_TARGET_ARG="mipsel-unknown-linux-musl"
-            RUST_TARGET_DIR="mipsel-unknown-linux-musl"
-            CARGO_EXTRA_FLAGS=""
-            LINKER_ENV="CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER=mipsel-linux-muslsf-gcc"
-            EXTRA_RUSTFLAGS="-C target-feature=+crt-static -C link-self-contained=no"
-            VERIFY_SOFT_FLOAT=1
-            USE_BUILD_STD=1
-            PKG_ARCH="mipsel_24kc"
-            ;;
-        arm_cortex-a7_neon-vfpv4)
-            MUSL_TARGET="arm-linux-musleabihf"
-            GCC_EXTRA_CONFIG="--with-arch=armv7-a --with-fpu=neon-vfpv4 --with-float=hard"
-            IMAGE_NAME="aredn-rust-arm-cortex-a7"
-            RUST_TARGET_ARG="armv7-unknown-linux-musleabihf"
-            RUST_TARGET_DIR="armv7-unknown-linux-musleabihf"
-            CARGO_EXTRA_FLAGS=""
-            LINKER_ENV="CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=arm-linux-musleabihf-gcc"
-            EXTRA_RUSTFLAGS="-C link-self-contained=no -C link-arg=-lgcc"
-            VERIFY_SOFT_FLOAT=0
-            USE_BUILD_STD=0
-            PKG_ARCH="arm_cortex-a7_neon-vfpv4"
-            ;;
-        aarch64_cortex-a53)
-            MUSL_TARGET="aarch64-linux-musl"
-            GCC_EXTRA_CONFIG=""
-            IMAGE_NAME="aredn-rust-aarch64"
-            RUST_TARGET_ARG="aarch64-unknown-linux-musl"
-            RUST_TARGET_DIR="aarch64-unknown-linux-musl"
-            CARGO_EXTRA_FLAGS=""
-            LINKER_ENV="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc"
-            EXTRA_RUSTFLAGS="-C link-self-contained=no"
-            VERIFY_SOFT_FLOAT=0
-            USE_BUILD_STD=0
-            PKG_ARCH="aarch64_cortex-a53"
-            ;;
-        x86_64)
-            MUSL_TARGET="x86_64-linux-musl"
-            GCC_EXTRA_CONFIG=""
-            IMAGE_NAME="aredn-rust-x86-64"
-            RUST_TARGET_ARG="x86_64-unknown-linux-musl"
-            RUST_TARGET_DIR="x86_64-unknown-linux-musl"
-            CARGO_EXTRA_FLAGS=""
-            LINKER_ENV="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc"
-            EXTRA_RUSTFLAGS="-C link-self-contained=no"
-            VERIFY_SOFT_FLOAT=0
-            USE_BUILD_STD=0
-            PKG_ARCH="x86_64"
-            ;;
-        *)
-            echo "ERROR: Unknown architecture: $arch"
-            usage
-            ;;
-    esac
-}
-
-# ---------------------------------------------------------------------------
-# Build + verify one architecture
-# ---------------------------------------------------------------------------
-build_arch() {
+package_arch() {
     local arch="$1"
     configure_arch "$arch"
 
-    echo ""
-    echo "================================================================"
-    echo "==> [$arch] Building $PKG_NAME"
-    echo "================================================================"
-
-    # -- Docker image -------------------------------------------------------
-    echo "==> [$arch] Building toolchain Docker image..."
-    docker build -t "$IMAGE_NAME" \
-        --build-arg MUSL_TARGET="$MUSL_TARGET" \
-        --build-arg GCC_EXTRA_CONFIG="$GCC_EXTRA_CONFIG" \
-        -f "$SCRIPT_DIR/Dockerfile.cross" "$PROJECT_ROOT"
-
-    # -- Compile ------------------------------------------------------------
-    echo "==> [$arch] Compiling..."
-    if [ "$USE_BUILD_STD" -eq 1 ]; then
-        # MIPS targets are Tier 3 — no pre-built std, requires nightly + build-std
-        docker run --rm \
-            -v "$PROJECT_ROOT":/src \
-            -w /src \
-            ${LINKER_ENV:+-e "$LINKER_ENV"} \
-            ${EXTRA_RUSTFLAGS:+-e "RUSTFLAGS=$EXTRA_RUSTFLAGS"} \
-            "$IMAGE_NAME" \
-            bash -c '
-                # Provide libunwind.a from GCC exception handling library —
-                # std links -lunwind for backtrace support even with panic=abort
-                GCC_LIB_DIR=$($MUSL_TARGET-gcc -print-libgcc-file-name | xargs dirname)
-                cp "${GCC_LIB_DIR}/libgcc_eh.a" "${GCC_LIB_DIR}/libunwind.a"
-
-                cargo +nightly build \
-                    -Z build-std=std,panic_abort \
-                    '"$CARGO_EXTRA_FLAGS"' \
-                    --target '"$RUST_TARGET_ARG"' \
-                    --profile '"$PROFILE"'
-            '
-    else
-        # Tier 2 targets — pre-built std available, use stable toolchain
-        docker run --rm \
-            -v "$PROJECT_ROOT":/src \
-            -w /src \
-            ${LINKER_ENV:+-e "$LINKER_ENV"} \
-            ${EXTRA_RUSTFLAGS:+-e "RUSTFLAGS=$EXTRA_RUSTFLAGS"} \
-            "$IMAGE_NAME" \
-            bash -c '
-                # Provide libunwind.a from GCC exception handling library —
-                # std links -lunwind for backtrace support even with panic=abort
-                GCC_LIB_DIR=$($MUSL_TARGET-gcc -print-libgcc-file-name | xargs dirname)
-                cp "${GCC_LIB_DIR}/libgcc_eh.a" "${GCC_LIB_DIR}/libunwind.a"
-
-                cargo build \
-                    '"$CARGO_EXTRA_FLAGS"' \
-                    --target '"$RUST_TARGET_ARG"' \
-                    --profile '"$PROFILE"'
-            '
-    fi
-
     BINARY="$PROJECT_ROOT/target/$RUST_TARGET_DIR/$PROFILE/$PKG_NAME"
 
-    echo "==> [$arch] Build complete:"
-    ls -lh "$BINARY"
-    file "$BINARY"
-
-    # -- Verify soft-float (MIPS only) --------------------------------------
-    if [ "$VERIFY_SOFT_FLOAT" -eq 1 ]; then
-        echo "==> [$arch] Checking for hardware float instructions..."
-        COUNT=$(docker run --rm \
-            -v "$PROJECT_ROOT/target:/target" \
-            "$IMAGE_NAME" \
-            bash -c '$MUSL_TARGET-objdump -d /target/'"$RUST_TARGET_DIR/$PROFILE/$PKG_NAME"' \
-            | grep -c -E '"'"'\blwc1|swc1|mtc1|mfc1|add\.s|mul\.s|div\.s|cvt\.|mov\.s\b'"'"'' \
-        ) || true
-        echo "    Hard-float instructions: ${COUNT:-0}"
-        if [ "${COUNT:-0}" -eq 0 ]; then
-            echo "    OK — pure soft-float binary"
-        else
-            echo "    WARNING — binary contains hardware float instructions"
-        fi
+    if [ ! -f "$BINARY" ]; then
+        echo "ERROR: Binary not found: $BINARY"
+        echo "       Run ./build.sh $arch first to compile."
+        exit 1
     fi
 
-    # -- Package ------------------------------------------------------------
     package_binary "$BINARY" "$PKG_ARCH"
 }
 
@@ -304,6 +140,10 @@ EOF
     (cd "$root/data" && tar czf "$SCRIPT_DIR/$apk" .PKGINFO .post-install .pre-deinstall .post-upgrade *)
     echo "    APK: $SCRIPT_DIR/$apk"
 
+    # Convienience symlink for latest version
+    ln -sf "$SCRIPT_DIR/$ipk" "$SCRIPT_DIR/${PKG_NAME}_${pkg_arch}.ipk"
+    ln -sf "$SCRIPT_DIR/$apk" "$SCRIPT_DIR/${PKG_NAME}-${pkg_arch}.apk"
+
     rm -rf "$root"
 }
 
@@ -311,8 +151,8 @@ EOF
 # Main — iterate requested architectures
 # ---------------------------------------------------------------------------
 for arch in $ARCHES; do
-    build_arch "$arch"
+    package_arch "$arch"
 done
 
 echo ""
-echo "==> All requested builds complete."
+echo "==> All requested packages complete."

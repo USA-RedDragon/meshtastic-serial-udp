@@ -1,0 +1,167 @@
+name: ci
+
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.ref }}'
+  cancel-in-progress: false
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - mips_24kc
+          - mipsel_24kc
+          - arm_cortex-a7_neon-vfpv4
+          - aarch64_cortex-a53
+          - x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Test
+        run: |
+          ./test.sh ${{ matrix.arch }}
+
+  test-results:
+    if: always()
+    needs: [ test ]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          result="${{ needs.test.result }}"
+          if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+            echo "All tests passed"
+          else
+            echo "One or more tests failed" >&2
+            exit 1
+          fi
+
+  version:
+    name: Determine version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          # push to deploy branch returns dev-$SHA
+          # tag pushes return the tag
+          SHA="$(cut -c-8 <<< "$GITHUB_SHA")"
+          if [[ "$GITHUB_REF_NAME" == "main" ]]; then
+            echo "VERSION=dev-${SHA}" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_REF" == 'refs/tags/'* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            echo "VERSION=${VERSION}-${SHA}" >> $GITHUB_OUTPUT
+          fi
+      - name: Print version
+        run: |
+          echo Building version: ${{ steps.version.outputs.VERSION }}
+
+  build:
+    needs: [ version ]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - mips_24kc
+          - mipsel_24kc
+          - arm_cortex-a7_neon-vfpv4
+          - aarch64_cortex-a53
+          - x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Build
+        run: |
+          ./build.sh ${{ matrix.arch }}
+        env:
+          PKG_VERSION: ${{ needs.version.outputs.version }}
+      - name: Determine binary path
+        id: binary
+        run: |
+          source ./hack/arch-config.sh
+          configure_arch "${{ matrix.arch }}"
+          echo "path=./target/${RUST_TARGET_DIR}/release/meshtastic-serial-udp" >> $GITHUB_OUTPUT
+      - name: Upload binary
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ matrix.arch }}-bin
+          retention-days: 1
+          if-no-files-found: error
+          path: ${{ steps.binary.outputs.path }}
+      - name: Upload apk artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: openwrt-${{ matrix.arch }}-apk
+          retention-days: 1
+          if-no-files-found: error
+          path: ./openwrt/meshtastic-serial-udp_${{ matrix.arch }}.apk
+      - name: Upload ipk artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: openwrt-${{ matrix.arch }}-ipk
+          retention-days: 1
+          if-no-files-found: error
+          path: ./openwrt/meshtastic-serial-udp_${{ matrix.arch }}.ipk
+
+  build-results:
+    if: always()
+    needs: [ build ]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          result="${{ needs.build.result }}"
+          if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+            echo "All builds succeeded"
+          else
+            echo "One or more builds failed" >&2
+            exit 1
+          fi
+
+  release:
+    needs: [ version, test-results, build-results ]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: List artifacts
+        run: find artifacts -type f | sort
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ASSETS=()
+          while IFS= read -r f; do ASSETS+=("$f"); done < <(find artifacts -type f | sort)
+
+          if [[ "$GITHUB_REF" == 'refs/tags/'* ]]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              "${ASSETS[@]}"
+          else
+            gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+            gh release create dev \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Development Build (${VERSION})" \
+              --prerelease \
+              --target "$GITHUB_SHA" \
+              "${ASSETS[@]}"
+          fi
