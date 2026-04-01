@@ -194,7 +194,7 @@ jobs:
               --generate-notes \
               "${ASSETS[@]}"
           else
-            gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+            gh release delete dev --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
             gh release create dev \
               --repo "$GITHUB_REPOSITORY" \
               --title "Development Build (${VERSION})" \
