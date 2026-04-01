@@ -15,7 +15,8 @@ start_service()
         --port "${PORT:-/dev/ttyACM0}" \
         --baud "${BAUD:-115200}" \
         --udp-addr "${UDP_ADDR:-224.0.0.69}" \
-        --udp-port "${UDP_PORT:-4403}"
+        --udp-port "${UDP_PORT:-4403}" \
+        --platform openwrt
 
     [ -n "${INTERFACE:-}" ] && procd_append_param command --interface "$INTERFACE"
 

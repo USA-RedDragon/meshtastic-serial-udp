@@ -1,5 +1,6 @@
 mod bridge;
 mod crypto;
+mod raven;
 mod serial;
 mod serial_framing;
 mod udp;
@@ -43,6 +44,16 @@ struct Cli {
     /// Network interface IP to bind multicast socket to (optional)
     #[arg(long)]
     interface: Option<Ipv4Addr>,
+
+    /// Platform
+    #[arg(long, default_value = "other")]
+    platform: Platform,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum Platform {
+    OpenWrt,
+    Other,
 }
 
 fn main() {
@@ -93,13 +104,37 @@ fn main() {
 
     log::info!("performing serial handshake...");
     let mut serial = serial;
-    let channels = match serial::handshake(&mut *serial) {
-        Ok(ch) => ch,
+    let (my_node_num, modem_preset, mut channels) = match serial::handshake(&mut *serial) {
+        Ok(result) => result,
         Err(e) => {
             log::error!("handshake failed: {e}");
             process::exit(1);
         }
     };
+
+    if matches!(cli.platform, Platform::OpenWrt) {
+        match raven::load_raven_channels() {
+            Ok(Some(raven_channels)) => {
+                log::info!("loaded {} channel(s) from raven.conf", raven_channels.len());
+                let merge_result = raven::merge_channels(&channels, &raven_channels, modem_preset);
+                for ch in &merge_result.to_install {
+                    log::info!("installing channel {} on device", ch.index);
+                    if let Err(e) = serial::send_set_channel(&mut *serial, my_node_num, ch.clone()) {
+                        log::error!("failed to install channel {}: {e}", ch.index);
+                        process::exit(1);
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                channels = merge_result.channels;
+            }
+            Ok(None) => {
+                log::info!("raven.conf not found, using device channels only");
+            }
+            Err(e) => {
+                log::warn!("failed to read raven.conf: {e}, using device channels only");
+            }
+        }
+    }
 
     let bridge = Bridge::new(serial, udp_socket, config, channels);
 

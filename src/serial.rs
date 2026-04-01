@@ -40,17 +40,17 @@ pub fn write_packet(
 }
 
 /// Perform the serial handshake with the default 30-second timeout.
-/// Returns the list of channel keys captured during the config dump.
-pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<Vec<ChannelKey>> {
+/// Returns (my_node_num, modem_preset, channel_keys) captured during the config dump.
+pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<(u32, i32, Vec<ChannelKey>)> {
     handshake_with_timeout(serial, HANDSHAKE_TIMEOUT)
 }
 
 /// Perform the serial handshake: send want_config_id and wait for matching config_complete_id.
-/// Captures Channel messages sent by the radio during the config dump.
+/// Captures MyNodeInfo, LoRa modem preset, and Channel messages sent by the radio during the config dump.
 pub fn handshake_with_timeout(
     serial: &mut dyn serialport::SerialPort,
     timeout: std::time::Duration,
-) -> io::Result<Vec<ChannelKey>> {
+) -> io::Result<(u32, i32, Vec<ChannelKey>)> {
     let config_id: u32 = rand::random();
     log::info!("starting handshake with want_config_id={config_id}");
 
@@ -67,6 +67,8 @@ pub fn handshake_with_timeout(
     let mut reader = FrameReader::new();
     let mut buf = [0u8; 1];
     let mut channels: Vec<ChannelKey> = Vec::new();
+    let mut my_node_num: Option<u32> = None;
+    let mut modem_preset: i32 = 0; // default: LONG_FAST
 
     loop {
         if std::time::Instant::now() > deadline {
@@ -91,13 +93,29 @@ pub fn handshake_with_timeout(
                                 match variant {
                                     meshtastic_proto::from_radio::PayloadVariant::ConfigCompleteId(id) => {
                                         if id == config_id {
+                                            let node_num = my_node_num.ok_or_else(|| {
+                                                io::Error::new(
+                                                    io::ErrorKind::InvalidData,
+                                                    "handshake completed without receiving MyNodeInfo",
+                                                )
+                                            })?;
                                             log::info!(
-                                                "handshake complete, captured {} channel(s)",
+                                                "handshake complete, node_num={node_num:#010x}, modem_preset={modem_preset}, captured {} channel(s)",
                                                 channels.len()
                                             );
-                                            return Ok(channels);
+                                            return Ok((node_num, modem_preset, channels));
                                         }
                                         log::warn!("config_complete_id mismatch: got {id}, expected {config_id}");
+                                    }
+                                    meshtastic_proto::from_radio::PayloadVariant::MyInfo(info) => {
+                                        log::info!("received MyNodeInfo: node_num={:#010x}", info.my_node_num);
+                                        my_node_num = Some(info.my_node_num);
+                                    }
+                                    meshtastic_proto::from_radio::PayloadVariant::Config(config) => {
+                                        if let Some(meshtastic_proto::config::PayloadVariant::Lora(lora)) = config.payload_variant {
+                                            modem_preset = lora.modem_preset;
+                                            log::info!("received LoRa config: modem_preset={modem_preset}");
+                                        }
                                     }
                                     meshtastic_proto::from_radio::PayloadVariant::Channel(ch) => {
                                         let role = ch.role;
@@ -137,6 +155,40 @@ pub fn handshake_with_timeout(
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Send an admin set_channel command to the local node over serial.
+/// This installs or updates a channel on the Meshtastic device.
+pub fn send_set_channel(
+    serial: &mut dyn serialport::SerialPort,
+    my_node_num: u32,
+    channel: meshtastic_proto::Channel,
+) -> io::Result<()> {
+    let admin_msg = meshtastic_proto::AdminMessage {
+        session_passkey: vec![],
+        payload_variant: Some(
+            meshtastic_proto::admin_message::PayloadVariant::SetChannel(channel),
+        ),
+    };
+    let admin_bytes = admin_msg.encode_to_vec();
+
+    let data = meshtastic_proto::Data {
+        portnum: meshtastic_proto::PortNum::AdminApp.into(),
+        payload: admin_bytes,
+        want_response: false,
+        ..Default::default()
+    };
+
+    let packet = meshtastic_proto::MeshPacket {
+        to: my_node_num,
+        channel: 0,
+        payload_variant: Some(
+            meshtastic_proto::mesh_packet::PayloadVariant::Decoded(data),
+        ),
+        ..Default::default()
+    };
+
+    write_packet(serial, packet)
 }
 
 #[cfg(test)]
@@ -269,6 +321,20 @@ mod tests {
             other => panic!("expected WantConfigId, got {other:?}"),
         };
 
+        // Inject MyNodeInfo
+        let my_info = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(
+                meshtastic_proto::from_radio::PayloadVariant::MyInfo(
+                    meshtastic_proto::MyNodeInfo {
+                        my_node_num: 0xABCD,
+                        ..Default::default()
+                    },
+                ),
+            ),
+        };
+        mock.inject_read_data(&serial_framing::frame_payload(&my_info.encode_to_vec()));
+
         // Inject matching ConfigCompleteId response
         let response = meshtastic_proto::FromRadio {
             id: 0,
@@ -320,6 +386,20 @@ mod tests {
             ),
         };
         mock.inject_read_data(&serial_framing::frame_payload(&noise.encode_to_vec()));
+
+        // Inject MyNodeInfo
+        let my_info = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(
+                meshtastic_proto::from_radio::PayloadVariant::MyInfo(
+                    meshtastic_proto::MyNodeInfo {
+                        my_node_num: 0xABCD,
+                        ..Default::default()
+                    },
+                ),
+            ),
+        };
+        mock.inject_read_data(&serial_framing::frame_payload(&my_info.encode_to_vec()));
 
         // Small delay, then inject the correct response
         std::thread::sleep(std::time::Duration::from_millis(100));

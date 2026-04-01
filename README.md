@@ -18,3 +18,13 @@ Once running, it acts as a bidirectional relay:
 Duplicate suppression prevents echo loops. Packets are tracked by ID so they aren't forwarded back to the direction they came from. A periodic heartbeat keeps the serial connection alive.
 
 Encryption is handled transparently: the radio speaks decoded payloads over serial, while the UDP side uses standard Meshtastic AES-CTR encryption, so LAN clients see the same encrypted packets they'd receive over the air.
+
+## Raven integration (OpenWrt)
+
+When running with `--platform openwrt`, the bridge checks for a [Raven](https://github.com/KN6PLV/Raven) configuration file at `/usr/local/raven/raven.conf`. If found, it parses the channel list from the config and merges them with the channels already configured on the Meshtastic radio:
+
+- **Duplicate channels** (matched by name) have their PSK updated to the Raven version.
+- **New channels** from Raven are added as SECONDARY channels on the device.
+- Channels are automatically installed on the Meshtastic device via admin commands during startup, so users don't need to manually pre-configure all channels on the radio.
+
+If `raven.conf` is not present, the bridge logs a message and continues with the device's existing channels only.

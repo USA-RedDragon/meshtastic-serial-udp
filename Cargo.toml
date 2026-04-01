@@ -5,16 +5,22 @@ edition = "2024"
 
 [dependencies]
 aes = "=0.8.4"
+base64 = "=0.22.1"
 clap = { version = "=4.6.0", features = ["derive"] }
 env_logger = "=0.11.10"
 log = "=0.4.29"
 prost = "=0.14.3"
 rand = "=0.10.0"
+serde = { version = "=1.0.221", features = ["derive"] }
+serde_json = "=1.0.140"
 serialport = "=4.9.0"
 socket2 = { version = "=0.6.3", features = ["all"] }
 
 [build-dependencies]
 prost-build = "=0.14.3"
+
+[dev-dependencies]
+tempfile = "=3.19.1"
 
 [profile.release]
 strip = true
