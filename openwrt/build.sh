@@ -118,7 +118,7 @@ EOF
     echo "    IPK: $SCRIPT_DIR/$ipk"
 
     # -- Build APK ----------------------------------------------------------
-    cp "$SCRIPT_DIR/postinstall" "$root/data/.post-install"
+    cp "$SCRIPT_DIR/postinst" "$root/data/.post-install"
     cp "$SCRIPT_DIR/prerm"       "$root/data/.pre-deinstall"
     cp "$SCRIPT_DIR/postupgrade" "$root/data/.post-upgrade"
     chmod 755 "$root/data/.post-install" "$root/data/.pre-deinstall" "$root/data/.post-upgrade"
