@@ -1,4 +1,4 @@
 [submodule "meshtastic-protobufs"]
 	path = meshtastic-protobufs
 	url = https://github.com/meshtastic/protobufs
-	branch = refs/tags/v2.7.20
+	branch = v2.7.20
