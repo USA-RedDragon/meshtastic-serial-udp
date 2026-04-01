@@ -167,16 +167,26 @@ jobs:
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           path: artifacts
-          merge-multiple: true
-      - name: List artifacts
-        run: find artifacts -type f | sort
+      - name: Prepare release assets
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p release
+          for arch in mips_24kc mipsel_24kc arm_cortex-a7_neon-vfpv4 aarch64_cortex-a53 x86_64; do
+            cp "artifacts/${arch}-bin/meshtastic-serial-udp" \
+               "release/meshtastic-serial-udp_${VERSION}_${arch}"
+            cp artifacts/openwrt-${arch}-apk/*.apk \
+               "release/meshtastic-serial-udp_${VERSION}_${arch}.apk"
+            cp artifacts/openwrt-${arch}-ipk/*.ipk \
+               "release/meshtastic-serial-udp_${VERSION}_${arch}.ipk"
+          done
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           ASSETS=()
-          while IFS= read -r f; do ASSETS+=("$f"); done < <(find artifacts -type f | sort)
+          while IFS= read -r f; do ASSETS+=("$f"); done < <(find release -type f | sort)
 
           if [[ "$GITHUB_REF" == 'refs/tags/'* ]]; then
             gh release create "$GITHUB_REF_NAME" \
