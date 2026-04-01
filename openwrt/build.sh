@@ -142,7 +142,7 @@ EOF
 
     # Convienience symlink for latest version
     ln -sf "$SCRIPT_DIR/$ipk" "$SCRIPT_DIR/${PKG_NAME}_${pkg_arch}.ipk"
-    ln -sf "$SCRIPT_DIR/$apk" "$SCRIPT_DIR/${PKG_NAME}-${pkg_arch}.apk"
+    ln -sf "$SCRIPT_DIR/$apk" "$SCRIPT_DIR/${PKG_NAME}_${pkg_arch}.apk"
 
     rm -rf "$root"
 }
