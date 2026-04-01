@@ -12,7 +12,7 @@ ARG GCC_EXTRA_CONFIG=--with-float=soft
 # ---------------------------------------------------------------------------
 # Stage 1: Build musl cross toolchain via musl-cross-make
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS toolchain-builder
+FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a AS toolchain-builder
 ARG MUSL_TARGET
 ARG GCC_EXTRA_CONFIG
 
@@ -32,7 +32,7 @@ RUN make -j$(nproc) install
 # ---------------------------------------------------------------------------
 # Stage 2: Rust cross-compilation environment
 # ---------------------------------------------------------------------------
-FROM rust:slim-bookworm
+FROM rust:slim-bookworm@sha256:5ae2d2ef9875c9c2407bf9b5678e6375304f7ecf8ea46b23e403a5690ec357ec
 ARG MUSL_TARGET
 
 COPY --from=toolchain-builder /opt/cross /opt/cross
