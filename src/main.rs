@@ -52,6 +52,7 @@ struct Cli {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 enum Platform {
+    #[value(name = "openwrt")]
     OpenWrt,
     Other,
 }
