@@ -9,6 +9,7 @@ use crate::crypto::{self, ChannelKey};
 use crate::meshtastic_proto;
 
 const RAVEN_CONF_PATH: &str = "/usr/local/raven/raven.conf";
+const RAVEN_CONF_OVERRIDE_PATH: &str = "/usr/local/raven/raven.conf.override";
 
 #[derive(Deserialize)]
 struct RavenConfig {
@@ -27,20 +28,66 @@ pub struct ParsedRavenChannel {
     pub psk: Vec<u8>,
 }
 
-/// Try to load and parse raven channels from the default raven.conf path.
-/// Returns None if the file doesn't exist. Returns Err on parse failures.
-pub fn load_raven_channels() -> io::Result<Option<Vec<ParsedRavenChannel>>> {
-    load_raven_channels_from(RAVEN_CONF_PATH)
+/// Deep-merge `override_val` into `base`, mirroring Raven's config.uc merge
+/// semantics: objects merge recursively, null deletes the key, and everything
+/// else (arrays, strings, numbers, booleans) replaces entirely.
+fn deep_merge(base: &mut serde_json::Value, override_val: &serde_json::Value) {
+    let (Some(base_obj), Some(over_obj)) = (base.as_object_mut(), override_val.as_object()) else {
+        return;
+    };
+    for (k, v) in over_obj {
+        if v.is_null() {
+            base_obj.remove(k);
+        } else if v.is_object() {
+            let entry = base_obj
+                .entry(k.clone())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if !entry.is_object() {
+                *entry = serde_json::Value::Object(serde_json::Map::new());
+            }
+            deep_merge(entry, v);
+        } else {
+            base_obj.insert(k.clone(), v.clone());
+        }
+    }
 }
 
-/// Load and parse raven channels from a specific path.
-fn load_raven_channels_from<P: AsRef<Path>>(path: P) -> io::Result<Option<Vec<ParsedRavenChannel>>> {
-    let content = match std::fs::read_to_string(path) {
+/// Try to load and parse raven channels from the default paths.
+/// Reads raven.conf, then deep-merges raven.conf.override on top if it exists.
+/// Returns None if the base file doesn't exist. Returns Err on parse failures.
+pub fn load_raven_channels() -> io::Result<Option<Vec<ParsedRavenChannel>>> {
+    load_raven_channels_with_override(RAVEN_CONF_PATH, RAVEN_CONF_OVERRIDE_PATH)
+}
+
+/// Load and parse raven channels from a base path, with an optional override
+/// file that is deep-merged on top (following Raven's config.uc semantics).
+fn load_raven_channels_with_override<P: AsRef<Path>, Q: AsRef<Path>>(
+    base_path: P,
+    override_path: Q,
+) -> io::Result<Option<Vec<ParsedRavenChannel>>> {
+    let base_content = match std::fs::read_to_string(base_path) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let config: RavenConfig = serde_json::from_str(&content)
+    let mut config_value: serde_json::Value = serde_json::from_str(&base_content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Apply override if present (mirroring Raven: missing override is silently ignored).
+    match std::fs::read_to_string(override_path) {
+        Ok(override_content) => {
+            let override_value: serde_json::Value =
+                serde_json::from_str(&override_content)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if override_value.is_object() {
+                deep_merge(&mut config_value, &override_value);
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    let config: RavenConfig = serde_json::from_value(config_value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let mut channels = Vec::with_capacity(config.channels.len());
@@ -50,6 +97,12 @@ fn load_raven_channels_from<P: AsRef<Path>>(path: P) -> io::Result<Option<Vec<Pa
         channels.push(parsed);
     }
     Ok(Some(channels))
+}
+
+/// Load and parse raven channels from a single path (no override).
+#[cfg(test)]
+fn load_raven_channels_from<P: AsRef<Path>>(path: P) -> io::Result<Option<Vec<ParsedRavenChannel>>> {
+    load_raven_channels_with_override(path, "/nonexistent-no-override")
 }
 
 /// Parse a "name base64psk" namekey string into name and raw PSK bytes.
@@ -365,5 +418,163 @@ mod tests {
         let result = merge_channels(&device, &raven, 6);
         assert_eq!(result.channels.len(), 2, "should add LongFast as new channel");
         assert_eq!(result.to_install.len(), 1);
+    }
+
+    // --- deep_merge tests ---
+
+    #[test]
+    fn test_deep_merge_replaces_array() {
+        let mut base = serde_json::json!({
+            "channels": [
+                { "namekey": "A aa==" },
+                { "namekey": "B bb==" }
+            ]
+        });
+        let over = serde_json::json!({
+            "channels": [
+                { "namekey": "C cc==" }
+            ]
+        });
+        deep_merge(&mut base, &over);
+        let arr = base["channels"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["namekey"], "C cc==");
+    }
+
+    #[test]
+    fn test_deep_merge_null_deletes_key() {
+        let mut base = serde_json::json!({
+            "debug": 1,
+            "role": "client_mute"
+        });
+        let over = serde_json::json!({ "debug": null });
+        deep_merge(&mut base, &over);
+        assert!(base.get("debug").is_none());
+        assert_eq!(base["role"], "client_mute");
+    }
+
+    #[test]
+    fn test_deep_merge_objects_recurse() {
+        let mut base = serde_json::json!({
+            "meshtastic": { "address": "127.0.0.1", "port": 4403 }
+        });
+        let over = serde_json::json!({
+            "meshtastic": { "port": 9999 }
+        });
+        deep_merge(&mut base, &over);
+        assert_eq!(base["meshtastic"]["address"], "127.0.0.1");
+        assert_eq!(base["meshtastic"]["port"], 9999);
+    }
+
+    #[test]
+    fn test_deep_merge_empty_override() {
+        let mut base = serde_json::json!({ "debug": 0, "role": "client_mute" });
+        let over = serde_json::json!({});
+        deep_merge(&mut base, &over);
+        assert_eq!(base["debug"], 0);
+        assert_eq!(base["role"], "client_mute");
+    }
+
+    #[test]
+    fn test_deep_merge_adds_new_key() {
+        let mut base = serde_json::json!({ "debug": 0 });
+        let over = serde_json::json!({ "newkey": "value" });
+        deep_merge(&mut base, &over);
+        assert_eq!(base["debug"], 0);
+        assert_eq!(base["newkey"], "value");
+    }
+
+    #[test]
+    fn test_deep_merge_new_nested_object() {
+        let mut base = serde_json::json!({ "debug": 0 });
+        let over = serde_json::json!({ "meshtastic": { "address": "10.0.0.1" } });
+        deep_merge(&mut base, &over);
+        assert_eq!(base["meshtastic"]["address"], "10.0.0.1");
+    }
+
+    // --- override file loading tests ---
+
+    #[test]
+    fn test_load_with_override_missing_override() {
+        // Override file doesn't exist — should use base channels only.
+        let mut base = NamedTempFile::new().unwrap();
+        base.write_all(SAMPLE_RAVEN_CONF.as_bytes()).unwrap();
+        let result = load_raven_channels_with_override(
+            base.path(),
+            "/nonexistent/raven.conf.override",
+        )
+        .unwrap();
+        let channels = result.unwrap();
+        assert_eq!(channels.len(), 5);
+    }
+
+    #[test]
+    fn test_load_with_override_replaces_channels() {
+        let mut base = NamedTempFile::new().unwrap();
+        base.write_all(SAMPLE_RAVEN_CONF.as_bytes()).unwrap();
+
+        let mut over = NamedTempFile::new().unwrap();
+        over.write_all(
+            br#"{
+                "channels": [
+                    { "namekey": "AREDN og==" },
+                    { "namekey": "LongFast AQ==" },
+                    { "namekey": "MeshCore izOH6cXN6mrJ5e26oRXNcg==" },
+                    { "namekey": "OK-WX Uw==" },
+                    { "namekey": "PMesh DcYgnMhTKG64bXt+n8gLCzK57IpEhRnhYwpL4xowu9Y=" },
+                    { "namekey": "OK-Wide oA==" }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let result =
+            load_raven_channels_with_override(base.path(), over.path()).unwrap();
+        let channels = result.unwrap();
+        assert_eq!(channels.len(), 6);
+        assert_eq!(channels[5].name, "OK-Wide");
+        assert_eq!(channels[5].psk, vec![0xa0]);
+    }
+
+    #[test]
+    fn test_load_with_override_empty_object() {
+        let mut base = NamedTempFile::new().unwrap();
+        base.write_all(SAMPLE_RAVEN_CONF.as_bytes()).unwrap();
+
+        let mut over = NamedTempFile::new().unwrap();
+        over.write_all(b"{}").unwrap();
+
+        let result =
+            load_raven_channels_with_override(base.path(), over.path()).unwrap();
+        let channels = result.unwrap();
+        assert_eq!(channels.len(), 5, "empty override should not change channels");
+    }
+
+    #[test]
+    fn test_load_with_override_non_object_ignored() {
+        // Raven treats non-object overrides (e.g. an array) as no-op.
+        let mut base = NamedTempFile::new().unwrap();
+        base.write_all(SAMPLE_RAVEN_CONF.as_bytes()).unwrap();
+
+        let mut over = NamedTempFile::new().unwrap();
+        over.write_all(b"[]").unwrap();
+
+        let result =
+            load_raven_channels_with_override(base.path(), over.path()).unwrap();
+        let channels = result.unwrap();
+        assert_eq!(channels.len(), 5, "array override should be ignored");
+    }
+
+    #[test]
+    fn test_load_with_override_invalid_json() {
+        let mut base = NamedTempFile::new().unwrap();
+        base.write_all(SAMPLE_RAVEN_CONF.as_bytes()).unwrap();
+
+        let mut over = NamedTempFile::new().unwrap();
+        over.write_all(b"not json").unwrap();
+
+        assert!(
+            load_raven_channels_with_override(base.path(), over.path()).is_err()
+        );
     }
 }
