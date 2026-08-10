@@ -21,7 +21,7 @@ ARCH_LIST
 }
 
 # renovate: datasource=docker depName=ghcr.io/USA-RedDragon/rust-cross
-RUST_VERSION="1.94.1"
+RUST_VERSION=1.97.1
 IMAGE_NAME="ghcr.io/usa-reddragon/rust-cross:${RUST_VERSION}"
 
 configure_arch() {
