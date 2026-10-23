@@ -109,10 +109,13 @@ run_cargo() {
     shift
     local cargo_args="$*"
 
+    mkdir -p "$project_root/target/cargo-registry"
+
     if [ "$USE_BUILD_STD" -eq 1 ]; then
         docker run --rm \
             --user "$(id -u):$(id -g)" \
             -v "$project_root":/src \
+            -v "$project_root/target/cargo-registry":/usr/local/cargo/registry \
             -w /src \
             -e "MUSL_TARGET=$MUSL_TARGET" \
             ${LINKER_ENV:+-e "$LINKER_ENV"} \
@@ -133,6 +136,7 @@ run_cargo() {
         docker run --rm \
             --user "$(id -u):$(id -g)" \
             -v "$project_root":/src \
+            -v "$project_root/target/cargo-registry":/usr/local/cargo/registry \
             -w /src \
             -e "MUSL_TARGET=$MUSL_TARGET" \
             ${LINKER_ENV:+-e "$LINKER_ENV"} \
