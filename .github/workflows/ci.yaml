@@ -34,6 +34,9 @@ jobs:
 
   coverage:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -48,11 +51,27 @@ jobs:
         run: cargo install cargo-llvm-cov --locked
       - name: Generate coverage
         run: cargo llvm-cov --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
-        if: always()
+      - name: Generate app token
+        id: app-token
+        if: always() && vars.AUTO_COMMIT_APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+          client-id: ${{ vars.AUTO_COMMIT_APP_ID }}
+          private-key: ${{ secrets.AUTO_COMMIT_APP_KEY }}
+          permission-contents: write
+      - name: Authenticate git for the coverage push
+        if: always()
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+        run: |
+          git config --local http.https://github.com/.extraheader \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+      - name: Report coverage
+        if: always()
+        uses: USA-RedDragon/reusable-actions/coverage@c5ee15922a0ff4229b0f06a8d0551541b5cabfdc # v2.0.34
+        with:
+          file: lcov.info
+          if-no-file: warn
 
   test-results:
     if: always()
