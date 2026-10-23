@@ -112,6 +112,37 @@ fn aes_ctr_transform(key: &[u8], from: u32, packet_id: u32, data: &[u8]) -> Vec<
     output
 }
 
+/// Map a modem_preset integer (from LoRaConfig) to the default channel name
+/// the firmware uses when the primary channel's name field is empty.
+pub fn modem_preset_name(modem_preset: i32) -> &'static str {
+    match modem_preset {
+        0 => "LongFast",
+        1 => "LongSlow",
+        3 => "MediumSlow",
+        4 => "MediumFast",
+        5 => "ShortSlow",
+        6 => "ShortFast",
+        7 => "LongMod",
+        8 => "ShortTurbo",
+        9 => "LongTurbo",
+        10 => "LiteFast",
+        11 => "LiteSlow",
+        12 => "NarrowFast",
+        13 => "NarrowSlow",
+        _ => "Invalid",
+    }
+}
+
+pub fn channel_display_name(name: &str, use_preset: bool, modem_preset: i32) -> String {
+    if !name.is_empty() {
+        name.to_string()
+    } else if use_preset {
+        modem_preset_name(modem_preset).to_string()
+    } else {
+        "Custom".to_string()
+    }
+}
+
 /// Build a `ChannelKey` from a protobuf `Channel` message.
 pub fn channel_key_from_proto(
     index: u32,
@@ -119,9 +150,6 @@ pub fn channel_key_from_proto(
     psk: &[u8],
 ) -> ChannelKey {
     let key = expand_psk(psk);
-    // For hash computation, use the channel name (or the preset name for default channels).
-    // If name is empty, the firmware uses the modem preset name, but for hash purposes
-    // an empty string is fine — it just means only the key bytes contribute to the hash.
     let hash = channel_hash(name, &key);
     ChannelKey {
         index,
@@ -242,5 +270,20 @@ mod tests {
         assert_eq!(ck.name, "LongFast");
         assert_eq!(ck.key.len(), 16);
         assert_eq!(ck.hash, channel_hash("LongFast", &ck.key));
+    }
+
+    #[test]
+    fn test_channel_display_name() {
+        assert_eq!(channel_display_name("AREDN", true, 0), "AREDN");
+        assert_eq!(channel_display_name("", true, 0), "LongFast");
+        assert_eq!(channel_display_name("", true, 4), "MediumFast");
+        assert_eq!(channel_display_name("", true, 7), "LongMod");
+        assert_eq!(channel_display_name("", false, 0), "Custom");
+    }
+
+    #[test]
+    fn test_default_longfast_hash_is_8() {
+        let name = channel_display_name("", true, 0);
+        assert_eq!(channel_key_from_proto(0, &name, &[1]).hash, 8);
     }
 }

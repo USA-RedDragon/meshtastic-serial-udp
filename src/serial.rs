@@ -8,20 +8,26 @@ use crate::serial_framing::{self, FrameReader};
 
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Decode a serial frame payload (FromRadio) and extract the inner MeshPacket, if present.
-pub fn decode_packet(payload: &[u8]) -> Option<meshtastic_proto::MeshPacket> {
+pub enum RadioFrame {
+    Packet(meshtastic_proto::MeshPacket),
+    Rebooted,
+    Other,
+}
+
+pub fn decode_frame(payload: &[u8]) -> RadioFrame {
     match meshtastic_proto::FromRadio::decode(payload) {
         Ok(from_radio) => match from_radio.payload_variant {
-            Some(meshtastic_proto::from_radio::PayloadVariant::Packet(p)) => Some(p),
+            Some(meshtastic_proto::from_radio::PayloadVariant::Packet(p)) => RadioFrame::Packet(p),
+            Some(meshtastic_proto::from_radio::PayloadVariant::Rebooted(true)) => RadioFrame::Rebooted,
             Some(_) => {
                 log::debug!("ignoring non-packet FromRadio variant");
-                None
+                RadioFrame::Other
             }
-            None => None,
+            None => RadioFrame::Other,
         },
         Err(e) => {
             log::warn!("failed to decode FromRadio: {e}");
-            None
+            RadioFrame::Other
         }
     }
 }
@@ -39,9 +45,39 @@ pub fn write_packet(
     serial.write_all(&frame)
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RadioInfo {
+    pub my_node_num: u32,
+    pub modem_preset: i32,
+    pub use_preset: bool,
+    pub region: i32,
+    pub channels: Vec<meshtastic_proto::Channel>,
+    pub mqtt: Option<meshtastic_proto::module_config::MqttConfig>,
+}
+
+impl RadioInfo {
+    pub fn channel_keys(&self) -> Vec<ChannelKey> {
+        self.channels
+            .iter()
+            .filter_map(|ch| {
+                let settings = ch.settings.as_ref()?;
+                let name = crate::crypto::channel_display_name(
+                    &settings.name,
+                    self.use_preset,
+                    self.modem_preset,
+                );
+                Some(crate::crypto::channel_key_from_proto(
+                    ch.index as u32,
+                    &name,
+                    &settings.psk,
+                ))
+            })
+            .collect()
+    }
+}
+
 /// Perform the serial handshake with the default 30-second timeout.
-/// Returns (my_node_num, modem_preset, channel_keys) captured during the config dump.
-pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<(u32, i32, Vec<ChannelKey>)> {
+pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<RadioInfo> {
     handshake_with_timeout(serial, HANDSHAKE_TIMEOUT)
 }
 
@@ -50,7 +86,7 @@ pub fn handshake(serial: &mut dyn serialport::SerialPort) -> io::Result<(u32, i3
 pub fn handshake_with_timeout(
     serial: &mut dyn serialport::SerialPort,
     timeout: std::time::Duration,
-) -> io::Result<(u32, i32, Vec<ChannelKey>)> {
+) -> io::Result<RadioInfo> {
     let config_id: u32 = rand::random();
     log::info!("starting handshake with want_config_id={config_id}");
 
@@ -66,9 +102,11 @@ pub fn handshake_with_timeout(
     let deadline = std::time::Instant::now() + timeout;
     let mut reader = FrameReader::new();
     let mut buf = [0u8; 1];
-    let mut channels: Vec<ChannelKey> = Vec::new();
+    let mut info = RadioInfo {
+        use_preset: true,
+        ..Default::default()
+    };
     let mut my_node_num: Option<u32> = None;
-    let mut modem_preset: i32 = 0; // default: LONG_FAST
 
     loop {
         if std::time::Instant::now() > deadline {
@@ -99,11 +137,22 @@ pub fn handshake_with_timeout(
                                                     "handshake completed without receiving MyNodeInfo",
                                                 )
                                             })?;
+                                            info.my_node_num = node_num;
+                                            for ck in info.channel_keys() {
+                                                log::info!(
+                                                    "channel {}: name={:?} hash={} key_len={}",
+                                                    ck.index,
+                                                    ck.name,
+                                                    ck.hash,
+                                                    ck.key.len(),
+                                                );
+                                            }
                                             log::info!(
-                                                "handshake complete, node_num={node_num:#010x}, modem_preset={modem_preset}, captured {} channel(s)",
-                                                channels.len()
+                                                "handshake complete, node_num={node_num:#010x}, modem_preset={}, captured {} channel(s)",
+                                                info.modem_preset,
+                                                info.channels.len()
                                             );
-                                            return Ok((node_num, modem_preset, channels));
+                                            return Ok(info);
                                         }
                                         log::warn!("config_complete_id mismatch: got {id}, expected {config_id}");
                                     }
@@ -113,30 +162,39 @@ pub fn handshake_with_timeout(
                                     }
                                     meshtastic_proto::from_radio::PayloadVariant::Config(config) => {
                                         if let Some(meshtastic_proto::config::PayloadVariant::Lora(lora)) = config.payload_variant {
-                                            modem_preset = lora.modem_preset;
-                                            log::info!("received LoRa config: modem_preset={modem_preset}");
+                                            info.modem_preset = lora.modem_preset;
+                                            info.use_preset = lora.use_preset;
+                                            info.region = lora.region;
+                                            log::info!(
+                                                "received LoRa config: modem_preset={} use_preset={}",
+                                                lora.modem_preset,
+                                                lora.use_preset
+                                            );
                                         }
                                     }
+                                    meshtastic_proto::from_radio::PayloadVariant::ModuleConfig(mc) => {
+                                        if let Some(meshtastic_proto::module_config::PayloadVariant::Mqtt(mqtt)) = mc.payload_variant {
+                                            log::info!(
+                                                "received MQTT config: enabled={} proxy_to_client_enabled={}",
+                                                mqtt.enabled,
+                                                mqtt.proxy_to_client_enabled
+                                            );
+                                            info.mqtt = Some(mqtt);
+                                        }
+                                    }
+                                    meshtastic_proto::from_radio::PayloadVariant::Rebooted(true) => {
+                                        log::info!("radio rebooted during handshake, resending want_config_id");
+                                        info = RadioInfo {
+                                            use_preset: true,
+                                            ..Default::default()
+                                        };
+                                        my_node_num = None;
+                                        serial.write_all(&frame)?;
+                                    }
                                     meshtastic_proto::from_radio::PayloadVariant::Channel(ch) => {
-                                        let role = ch.role;
                                         // Role 0 = DISABLED, 1 = PRIMARY, 2 = SECONDARY
-                                        if role == 1 || role == 2 {
-                                            if let Some(settings) = &ch.settings {
-                                                let ck = crate::crypto::channel_key_from_proto(
-                                                    ch.index as u32,
-                                                    &settings.name,
-                                                    &settings.psk,
-                                                );
-                                                log::info!(
-                                                    "channel {}: name={:?} role={} hash={} key_len={}",
-                                                    ck.index,
-                                                    ck.name,
-                                                    if role == 1 { "PRIMARY" } else { "SECONDARY" },
-                                                    ck.hash,
-                                                    ck.key.len(),
-                                                );
-                                                channels.push(ck);
-                                            }
+                                        if (ch.role == 1 || ch.role == 2) && ch.settings.is_some() {
+                                            info.channels.push(ch);
                                         }
                                     }
                                     _ => {
@@ -157,6 +215,35 @@ pub fn handshake_with_timeout(
     }
 }
 
+pub fn wait_for_reboot(
+    serial: &mut dyn serialport::SerialPort,
+    timeout: std::time::Duration,
+) -> io::Result<bool> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut reader = FrameReader::new();
+    let mut buf = [0u8; 256];
+    while std::time::Instant::now() < deadline {
+        match serial.read(&mut buf) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "serial port closed",
+                ));
+            }
+            Ok(n) => {
+                for frame in reader.feed_bytes(&buf[..n]) {
+                    if matches!(decode_frame(&frame), RadioFrame::Rebooted) {
+                        return Ok(true);
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(false)
+}
+
 /// Send an admin set_channel command to the local node over serial.
 /// This installs or updates a channel on the Meshtastic device.
 pub fn send_set_channel(
@@ -164,11 +251,37 @@ pub fn send_set_channel(
     my_node_num: u32,
     channel: meshtastic_proto::Channel,
 ) -> io::Result<()> {
+    send_admin(
+        serial,
+        my_node_num,
+        meshtastic_proto::admin_message::PayloadVariant::SetChannel(channel),
+    )
+}
+
+pub fn send_set_mqtt_config(
+    serial: &mut dyn serialport::SerialPort,
+    my_node_num: u32,
+    mqtt: meshtastic_proto::module_config::MqttConfig,
+) -> io::Result<()> {
+    send_admin(
+        serial,
+        my_node_num,
+        meshtastic_proto::admin_message::PayloadVariant::SetModuleConfig(
+            meshtastic_proto::ModuleConfig {
+                payload_variant: Some(meshtastic_proto::module_config::PayloadVariant::Mqtt(mqtt)),
+            },
+        ),
+    )
+}
+
+fn send_admin(
+    serial: &mut dyn serialport::SerialPort,
+    my_node_num: u32,
+    variant: meshtastic_proto::admin_message::PayloadVariant,
+) -> io::Result<()> {
     let admin_msg = meshtastic_proto::AdminMessage {
         session_passkey: vec![],
-        payload_variant: Some(
-            meshtastic_proto::admin_message::PayloadVariant::SetChannel(channel),
-        ),
+        payload_variant: Some(variant),
     };
     let admin_bytes = admin_msg.encode_to_vec();
 
@@ -191,6 +304,30 @@ pub fn send_set_channel(
     write_packet(serial, packet)
 }
 
+pub fn write_mqtt_proxy(
+    serial: &mut dyn serialport::SerialPort,
+    envelope: meshtastic_proto::ServiceEnvelope,
+) -> io::Result<()> {
+    let topic = format!("msh/2/e/{}/{}", envelope.channel_id, envelope.gateway_id);
+    let to_radio = meshtastic_proto::ToRadio {
+        payload_variant: Some(
+            meshtastic_proto::to_radio::PayloadVariant::MqttClientProxyMessage(
+                meshtastic_proto::MqttClientProxyMessage {
+                    topic,
+                    retained: false,
+                    payload_variant: Some(
+                        meshtastic_proto::mqtt_client_proxy_message::PayloadVariant::Data(
+                            envelope.encode_to_vec(),
+                        ),
+                    ),
+                },
+            ),
+        ),
+    };
+    let frame = serial_framing::frame_payload(&to_radio.encode_to_vec());
+    serial.write_all(&frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,7 +345,75 @@ mod tests {
         }
     }
 
-    // --- decode_packet tests ---
+    fn decode_packet(payload: &[u8]) -> Option<meshtastic_proto::MeshPacket> {
+        match decode_frame(payload) {
+            RadioFrame::Packet(p) => Some(p),
+            _ => None,
+        }
+    }
+
+
+    fn channel(index: i32, role: i32, name: &str, psk: &[u8]) -> meshtastic_proto::Channel {
+        meshtastic_proto::Channel {
+            index,
+            role,
+            settings: Some(meshtastic_proto::ChannelSettings {
+                name: name.to_string(),
+                psk: psk.to_vec(),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn test_channel_keys_use_preset_name() {
+        let info = RadioInfo {
+            my_node_num: 1,
+            modem_preset: 0,
+            use_preset: true,
+            region: 1,
+            channels: vec![channel(0, 1, "", &[1]), channel(1, 2, "AREDN", &[0x82])],
+            mqtt: None,
+        };
+        let keys = info.channel_keys();
+        assert_eq!(keys[0].name, "LongFast");
+        assert_eq!(keys[0].hash, 8);
+        assert_eq!(keys[1].name, "AREDN");
+        assert_eq!(keys[1].index, 1);
+    }
+
+
+    #[test]
+    fn test_wait_for_reboot() {
+        let mock = MockSerialPort::new();
+        let mut port = mock.try_clone().unwrap();
+        let rebooted = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(meshtastic_proto::from_radio::PayloadVariant::Rebooted(true)),
+        };
+        mock.inject_read_data(b"\x00\xffboot log text\r\n");
+        mock.inject_read_data(&serial_framing::frame_payload(&rebooted.encode_to_vec()));
+        assert!(wait_for_reboot(&mut *port, std::time::Duration::from_secs(2)).unwrap());
+    }
+
+    #[test]
+    fn test_wait_for_reboot_timeout() {
+        let mut port: Box<dyn serialport::SerialPort> = Box::new(MockSerialPort::new());
+        assert!(!wait_for_reboot(&mut *port, std::time::Duration::from_millis(300)).unwrap());
+    }
+
+
+    #[test]
+    fn test_decode_frame_rebooted() {
+        let from_radio = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(meshtastic_proto::from_radio::PayloadVariant::Rebooted(true)),
+        };
+        assert!(matches!(
+            decode_frame(&from_radio.encode_to_vec()),
+            RadioFrame::Rebooted
+        ));
+    }
 
     #[test]
     fn test_decode_packet_valid() {
@@ -413,6 +618,60 @@ mod tests {
 
         let result = handle.join().unwrap();
         assert!(result.is_ok(), "handshake should succeed: {result:?}");
+    }
+
+    fn wait_for_want_config(mock: &MockSerialPort) -> u32 {
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let written = mock.take_written();
+            if written.is_empty() {
+                continue;
+            }
+            let mut reader = serial_framing::FrameReader::new();
+            let frames = reader.feed_bytes(&written);
+            let to_radio = meshtastic_proto::ToRadio::decode(frames[0].as_slice()).unwrap();
+            match to_radio.payload_variant {
+                Some(meshtastic_proto::to_radio::PayloadVariant::WantConfigId(id)) => return id,
+                other => panic!("expected WantConfigId, got {other:?}"),
+            }
+        }
+        panic!("handshake never wrote want_config_id");
+    }
+
+    fn inject(mock: &MockSerialPort, variant: meshtastic_proto::from_radio::PayloadVariant) {
+        let fr = meshtastic_proto::FromRadio {
+            id: 0,
+            payload_variant: Some(variant),
+        };
+        mock.inject_read_data(&serial_framing::frame_payload(&fr.encode_to_vec()));
+    }
+
+    #[test]
+    fn test_handshake_resends_after_reboot() {
+        use meshtastic_proto::from_radio::PayloadVariant as V;
+        let mock = MockSerialPort::new();
+        let mut mock_clone = mock.try_clone().unwrap();
+        let handle = std::thread::spawn(move || {
+            handshake_with_timeout(&mut *mock_clone, std::time::Duration::from_secs(5))
+        });
+
+        let first = wait_for_want_config(&mock);
+        inject(&mock, V::MyInfo(meshtastic_proto::MyNodeInfo {
+            my_node_num: 0x1111,
+            ..Default::default()
+        }));
+        inject(&mock, V::Rebooted(true));
+        let second = wait_for_want_config(&mock);
+        assert_eq!(first, second, "should re-send the same request");
+
+        inject(&mock, V::MyInfo(meshtastic_proto::MyNodeInfo {
+            my_node_num: 0xABCD,
+            ..Default::default()
+        }));
+        inject(&mock, V::ConfigCompleteId(second));
+
+        let info = handle.join().unwrap().expect("handshake should succeed");
+        assert_eq!(info.my_node_num, 0xABCD);
     }
 
     #[test]
