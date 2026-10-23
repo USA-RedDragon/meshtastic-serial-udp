@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "meshtastic/atak.proto",
         "meshtastic/admin.proto",
         "meshtastic/connection_status.proto",
+        "meshtastic/mqtt.proto",
     ];
 
     let proto_paths: Vec<PathBuf> = proto_files

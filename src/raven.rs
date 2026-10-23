@@ -5,7 +5,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 
-use crate::crypto::{self, ChannelKey};
+use crate::crypto::{self, ChannelKey, modem_preset_name};
 use crate::meshtastic_proto;
 
 const RAVEN_CONF_PATH: &str = "/usr/local/raven/raven.conf";
@@ -126,24 +126,6 @@ pub struct MergeResult {
     /// Protobuf Channel messages that need to be installed on the device
     /// (new channels or channels with updated PSKs).
     pub to_install: Vec<meshtastic_proto::Channel>,
-}
-
-/// Map a modem_preset integer (from LoRaConfig) to the default channel name
-/// the firmware uses when the primary channel's name field is empty.
-pub fn modem_preset_name(modem_preset: i32) -> &'static str {
-    match modem_preset {
-        0 => "LongFast",
-        1 => "LongSlow",
-        2 => "VeryLongSlow",
-        3 => "MediumSlow",
-        4 => "MediumFast",
-        5 => "ShortSlow",
-        6 => "ShortFast",
-        7 => "LongModerate",
-        8 => "ShortTurbo",
-        9 => "LongTurbo",
-        _ => "LongFast",
-    }
 }
 
 /// Merge device-reported channels with raven-sourced channels.
@@ -404,6 +386,19 @@ mod tests {
         let result = merge_channels(&device, &raven, 0);
         assert_eq!(result.channels.len(), 1, "should not duplicate");
         assert!(result.to_install.is_empty(), "same PSK, no install needed");
+    }
+
+    #[test]
+    fn test_merge_same_psk_keeps_correct_hash() {
+        let device = vec![crypto::channel_key_from_proto(0, "LongFast", &[1])];
+        let raven = vec![ParsedRavenChannel {
+            name: "LongFast".to_string(),
+            psk: vec![1],
+        }];
+        let result = merge_channels(&device, &raven, 0);
+        assert_eq!(result.channels.len(), 1);
+        assert!(result.to_install.is_empty());
+        assert_eq!(result.channels[0].hash, 8);
     }
 
     #[test]

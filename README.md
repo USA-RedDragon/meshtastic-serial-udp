@@ -29,11 +29,30 @@ The bridge opens a serial connection to a Meshtastic radio and joins a UDP multi
 Once running, it acts as a bidirectional relay:
 
 - **Serial → UDP**: Packets received from the radio are decoded (protobuf `FromRadio` → `MeshPacket`), re-encrypted with the appropriate channel key, and sent to the multicast group as raw `MeshPacket` bytes.
-- **UDP → Serial**: Packets received from multicast are decrypted, stamped with the `TransportMulticastUdp` origin marker, wrapped in a `ToRadio` protobuf frame, and written to the serial port.
+- **UDP → Serial**: Encrypted packets received from multicast are handed to the radio through its MQTT client proxy (`ToRadio.mqttClientProxyMessage`), exactly as received. The radio treats them like packets downlinked from an MQTT broker: they keep their original sender, packet ID and hop count, and the firmware's own duplicate suppression and flooding rules decide whether to rebroadcast them over LoRa.
 
-Duplicate suppression prevents echo loops. Packets are tracked by ID so they aren't forwarded back to the direction they came from. A periodic heartbeat keeps the serial connection alive.
+Duplicate suppression prevents echo loops. Packets are tracked by sender and ID so they aren't forwarded back to the direction they came from. A periodic heartbeat keeps the serial connection alive.
 
-Encryption is handled transparently: the radio speaks decoded payloads over serial, while the UDP side uses standard Meshtastic AES-CTR encryption, so LAN clients see the same encrypted packets they'd receive over the air.
+Encryption is handled transparently: the radio speaks decoded payloads over serial, while the UDP side uses standard Meshtastic AES-CTR encryption and channel hashes, so LAN clients see the same encrypted packets they'd receive over the air.
+
+### Radio setup
+
+The radio needs a LoRa region set before it will transmit or receive anything; a factory-fresh radio has none, and the bridge won't pick one for you (it logs an error if it's unset). Set it once with the Meshtastic app or CLI, e.g. `meshtastic --set lora.region US`.
+
+### Radio settings the bridge changes
+
+For the MQTT client proxy path to work, the bridge configures the radio on first start:
+
+- **MQTT** is enabled with **Proxy to client** turned on. If MQTT was off and no broker address was set, the address is set to `127.0.0.1`, so a phone app connected to the radio (which would otherwise act as the proxy) can't connect to the public broker. Changing the MQTT settings reboots the radio once; the bridge waits for it and reconnects.
+- **Downlink** is enabled on every channel.
+
+Nodes that have **Ignore MQTT** set will ignore packets bridged from the LAN, since they are marked as having come via MQTT.
+
+If the radio's firmware is built without MQTT support (e.g. RAK11200 and STM32 builds), the bridge falls back to `--ingress phone`. In that mode packets are sent as ordinary `ToRadio` packets, which the firmware re-sends as the radio's *own* messages (the original sender is lost) and rate-limits like a phone app: one text message per 2 seconds, one position/telemetry/waypoint per 10 seconds per port, one traceroute per 30 seconds.
+
+### Reconnects
+
+If the radio reboots (it announces this over serial) the bridge redoes the handshake; if the serial device disappears (as USB-CDC radios do when they reboot) the bridge reopens it once it's back.
 
 ## Raven integration (OpenWrt)
 
