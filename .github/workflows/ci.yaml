@@ -13,7 +13,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +33,7 @@ jobs:
           ./test.sh ${{ matrix.arch }}
 
   coverage:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       pull-requests: write
@@ -76,7 +76,7 @@ jobs:
   test-results:
     if: always()
     needs: [ test, coverage ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - run: |
           results=("${{ needs.test.result }}" "${{ needs.coverage.result }}")
@@ -90,7 +90,7 @@ jobs:
 
   version:
     name: Determine version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
     steps:
@@ -112,7 +112,7 @@ jobs:
 
   build:
     needs: [ version ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -163,7 +163,7 @@ jobs:
   build-results:
     if: always()
     needs: [ build ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - run: |
           result="${{ needs.build.result }}"
@@ -177,7 +177,7 @@ jobs:
   release:
     needs: [ version, test-results, build-results ]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
