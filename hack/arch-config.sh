@@ -24,6 +24,10 @@ ARCH_LIST
 RUST_VERSION=1.98.1
 IMAGE_NAME="ghcr.io/usa-reddragon/rust-cross:${RUST_VERSION}"
 
+# apk-tools 3 image used to build APK packages for AREDN 4.26 and later.
+# renovate: datasource=docker depName=alpine
+APK_IMAGE="alpine:3.23@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63"
+
 configure_arch() {
     local arch="$1"
     case "$arch" in

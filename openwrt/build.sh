@@ -58,6 +58,20 @@ package_arch() {
 }
 
 # ---------------------------------------------------------------------------
+# Turn PKG_VERSION into a version apk accepts. CI versions look like
+# 1.2.3-<sha> or dev-<sha>, and apk only allows -r<number> after a dash.
+# ---------------------------------------------------------------------------
+apk_version() {
+    local v="$1"
+    case "$v" in
+        [0-9]*-r[0-9]*) echo "$v" ;;
+        [0-9]*-*)       echo "${v%%-*}" ;;
+        [0-9]*)         echo "$v" ;;
+        *)              echo "0.0.0" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Package a compiled binary as IPK + APK
 # ---------------------------------------------------------------------------
 package_binary() {
@@ -118,26 +132,45 @@ EOF
     echo "    IPK: $SCRIPT_DIR/$ipk"
 
     # -- Build APK ----------------------------------------------------------
-    cp "$SCRIPT_DIR/postinst" "$root/data/.post-install"
-    cp "$SCRIPT_DIR/prerm"       "$root/data/.pre-deinstall"
-    cp "$SCRIPT_DIR/postupgrade" "$root/data/.post-upgrade"
-    chmod 755 "$root/data/.post-install" "$root/data/.pre-deinstall" "$root/data/.post-upgrade"
-
+    # AREDN 4.26 (OpenWrt 25.12) uses apk-tools 3, which rejects a plain
+    # tar.gz with a .PKGINFO ("v2 package format error"). Build a native
+    # apk v3 package with apk mkpkg, the same tool OpenWrt uses.
     local apk="${PKG_NAME}-${pkg_arch}-${PKG_VERSION}.apk"
     rm -f "$SCRIPT_DIR/${PKG_NAME}-${pkg_arch}-"*.apk
 
-    cat > "$root/data/.PKGINFO" <<EOF
-pkgname = ${PKG_NAME}
-pkgver = ${PKG_VERSION}
-pkgdesc = Bridge a USB-serial Meshtastic radio to UDP multicast
-url = https://github.com/USA-RedDragon/meshtastic-serial-udp
-arch = ${pkg_arch}
-origin = ${PKG_NAME}
-maintainer = jacob@mcswain.dev
-depend = kmod-usb-acm
-EOF
+    mkdir -p "$root/scripts"
+    cp "$SCRIPT_DIR/postinst"    "$root/scripts/post-install"
+    cp "$SCRIPT_DIR/prerm"       "$root/scripts/pre-deinstall"
+    cp "$SCRIPT_DIR/postupgrade" "$root/scripts/post-upgrade"
 
-    (cd "$root/data" && tar czf "$SCRIPT_DIR/$apk" .PKGINFO .post-install .pre-deinstall .post-upgrade *)
+    docker run --rm \
+        -v "$root":/pkg:ro \
+        -v "$SCRIPT_DIR":/out \
+        -e "APK=$apk" \
+        -e "PKG_NAME=$PKG_NAME" \
+        -e "PKG_VERSION=$(apk_version "$PKG_VERSION")" \
+        -e "PKG_ARCH=$pkg_arch" \
+        -e "OWNER=$(id -u):$(id -g)" \
+        "$APK_IMAGE" \
+        sh -euc '
+            cp -a /pkg/data /build
+            chown -R 0:0 /build
+            apk mkpkg \
+                --info "name:$PKG_NAME" \
+                --info "version:$PKG_VERSION" \
+                --info "description:Bridge a USB-serial Meshtastic radio to UDP multicast" \
+                --info "arch:$PKG_ARCH" \
+                --info "origin:$PKG_NAME" \
+                --info "url:https://github.com/USA-RedDragon/meshtastic-serial-udp" \
+                --info "maintainer:jacob@mcswain.dev" \
+                --info "depends:kmod-usb-acm" \
+                --script "post-install:/pkg/scripts/post-install" \
+                --script "pre-deinstall:/pkg/scripts/pre-deinstall" \
+                --script "post-upgrade:/pkg/scripts/post-upgrade" \
+                --files /build \
+                --output "/out/$APK"
+            chown "$OWNER" "/out/$APK"
+        '
     echo "    APK: $SCRIPT_DIR/$apk"
 
     # Convienience symlink for latest version
