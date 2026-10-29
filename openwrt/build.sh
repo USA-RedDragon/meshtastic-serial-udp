@@ -138,6 +138,14 @@ EOF
     local apk="${PKG_NAME}-${pkg_arch}-${PKG_VERSION}.apk"
     rm -f "$SCRIPT_DIR/${PKG_NAME}-${pkg_arch}-"*.apk
 
+    # File list in the same form OpenWrt's include/package-pack.mk writes:
+    # every file and symlink, with a leading slash, sorted, not listing
+    # itself. AREDN's Packages page takes the package name from this file
+    # and only then keeps the package for reinstall after a firmware upgrade.
+    mkdir -p "$root/data/lib/apk/packages"
+    (cd "$root/data" && find . -type f,l -printf "/%P\n" | LC_ALL=C sort > "$root/files.list")
+    mv "$root/files.list" "$root/data/lib/apk/packages/${PKG_NAME}.list"
+
     mkdir -p "$root/scripts"
     cp "$SCRIPT_DIR/postinst"    "$root/scripts/post-install"
     cp "$SCRIPT_DIR/prerm"       "$root/scripts/pre-deinstall"
