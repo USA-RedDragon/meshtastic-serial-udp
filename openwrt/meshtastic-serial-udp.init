@@ -12,7 +12,7 @@ start_service()
 
     procd_open_instance meshtastic-serial-udp
     procd_set_param command /usr/bin/meshtastic-serial-udp \
-        --port "${PORT:-/dev/ttyACM0}" \
+        --port "${PORT:-auto}" \
         --baud "${BAUD:-115200}" \
         --udp-addr "${UDP_ADDR:-224.0.0.69}" \
         --udp-port "${UDP_PORT:-4403}" \

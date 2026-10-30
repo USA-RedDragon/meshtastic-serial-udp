@@ -1,3 +1,26 @@
 #!/bin/sh
+CONF=/etc/meshtastic-serial-udp.conf
+
+# Move PORT from the old default to auto detection, once: the old comment
+# line is rewritten too, so a later PORT=/dev/ttyACM0 set by hand stays.
+if [ -f "$CONF" ] && grep -qx 'PORT=/dev/ttyACM0' "$CONF" &&
+    grep -qxF '# Serial port path (e.g. /dev/ttyUSB0, /dev/ttyACM0)' "$CONF"; then
+    sed -i \
+        -e 's|^# Serial port path (e.g. /dev/ttyUSB0, /dev/ttyACM0)$|# Serial port path, or "auto" for the first port that answers the Meshtastic handshake|' \
+        -e 's|^PORT=/dev/ttyACM0$|PORT=auto|' \
+        "$CONF"
+fi
+
+# Drop the package's default config that opkg or apk set aside next to an
+# edited one, when it adds no setting the edited one lacks.
+for new in "$CONF-opkg" "$CONF.apk-new"; do
+    [ -f "$new" ] && [ -f "$CONF" ] || continue
+    stale=1
+    for key in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$new"); do
+        grep -q "^$key=" "$CONF" || stale=0
+    done
+    [ "$stale" = 1 ] && rm -f "$new"
+done
+
 /etc/init.d/meshtastic-serial-udp restart
 exit 0
