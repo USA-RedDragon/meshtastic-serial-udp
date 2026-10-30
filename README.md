@@ -20,7 +20,31 @@ After adding the above configuration, `service raven restart` to apply the chang
 
 We require `kmod-usb-acm` to be installed for the appropriate USB-serial drivers. You can install it with `opkg install kmod-usb-acm`.
 
-Then, the relevant .ipk/.apk file for your device can be found on the [releases page](https://github.com/USA-RedDragon/meshtastic-serial-udp/releases/latest). After installation, this service should start right away. You can check its status with `service meshtastic-serial-udp status` and view logs with `logread -e meshtastic-serial-udp`. After plugging in and powering on your Meshtastic radio, this program should automatically detect it, perform the serial handshake, and start relaying packets between the radio and the local network.
+Then, the relevant .ipk/.apk file for your device can be found on the [releases page](https://github.com/USA-RedDragon/meshtastic-serial-udp/releases/latest). After installation, this service should start right away. You can check its status with `service meshtastic-serial-udp status` and view logs with `logread -e meshtastic-serial-udp`. After plugging in and powering on your Meshtastic radio, this program finds it on its own (see [Choosing the serial port](#choosing-the-serial-port)), performs the serial handshake, and starts relaying packets between the radio and the local network.
+
+## Choosing the serial port
+
+By default (`--port auto`, or `PORT=auto` in `/etc/meshtastic-serial-udp.conf`) the bridge looks for the radio itself. It tries these serial ports in order:
+
+1. Each link in `/dev/serial/by-id/`, where the system provides that directory.
+2. `/dev/ttyACM0`, `/dev/ttyACM1`, and so on.
+3. `/dev/ttyUSB0`, `/dev/ttyUSB1`, and so on.
+
+A port that is reached through more than one of these paths is tried once. A port that another program already has open is skipped and not opened. On each other port, the bridge sends the Meshtastic `want_config` request, the same request it sends to a known radio, and nothing else. If no Meshtastic reply comes back within about 6 seconds, it closes the port and tries the next one. It uses the first port that completes the handshake and logs the reason it skipped each of the others. If no port answers, it logs an error and tries again, waiting longer each time up to 30 seconds. After the radio disconnects or reboots, the bridge looks again, so the radio can come back on a different port.
+
+To always use one port, give its path. On OpenWrt, set `PORT` in `/etc/meshtastic-serial-udp.conf` and run `service meshtastic-serial-udp restart`. On other systems, pass `--port`. A `/dev/serial/by-id/` path stays the same when other USB devices are plugged in or the order changes, so use one if your system has them:
+
+```bash
+PORT=/dev/serial/by-id/usb-RAKwireless_WisCore_RAK4631_Board_0123456789ABCDEF-if00
+```
+
+Set a fixed port if other serial devices are connected and you do not want the bridge to send them the probe request. Opening a serial port can reset some boards, for example ESP32 and Arduino boards with a USB-to-serial chip.
+
+Radios that show up as `/dev/ttyUSB*` need the kernel driver for their USB-to-serial chip, for example `kmod-usb-serial-cp210x` or `kmod-usb-serial-ch341`. The package only installs `kmod-usb-acm`, which covers radios that show up as `/dev/ttyACM*`.
+
+### Upgrading from an older version
+
+Older versions used `PORT=/dev/ttyACM0` by default. The first time this version is installed or upgraded, a config that still has `PORT=/dev/ttyACM0` is changed to `PORT=auto`. Any other `PORT` value is kept. This change happens once: if you need `/dev/ttyACM0` and nothing else, set `PORT=/dev/ttyACM0` again and later upgrades keep it.
 
 ## How it works
 
