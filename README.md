@@ -40,7 +40,7 @@ PORT=/dev/serial/by-id/usb-RAKwireless_WisCore_RAK4631_Board_0123456789ABCDEF-if
 
 Set a fixed port if other serial devices are connected and you do not want the bridge to send them the probe request. Opening a serial port can reset some boards, for example ESP32 and Arduino boards with a USB-to-serial chip.
 
-Radios that show up as `/dev/ttyUSB*` need the kernel driver for their USB-to-serial chip, for example `kmod-usb-serial-cp210x` or `kmod-usb-serial-ch341`. The package only installs `kmod-usb-acm`, which covers radios that show up as `/dev/ttyACM*`.
+Radios that show up as `/dev/ttyUSB*` need the kernel driver for their USB-to-serial chip (`kmod-usb-serial-cp210x`, `kmod-usb-serial-ch341` or `kmod-usb-serial-pl2303`). The package only installs `kmod-usb-acm`, which covers radios that show up as `/dev/ttyACM*`. AREDN's package feed does not carry the CP210x and CH340 drivers, so on AREDN prefer a radio with native USB (for example RAK4631, T-Echo or Heltec V3).
 
 ### Upgrading from an older version
 
