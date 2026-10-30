@@ -1,3 +1,4 @@
+mod autodetect;
 mod bridge;
 mod crypto;
 mod raven;
@@ -26,14 +27,16 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const MAX_REOPEN_DELAY: Duration = Duration::from_secs(30);
 const MQTT_PROXY_ONLY_ADDRESS: &str = "127.0.0.1";
 const MQTT_REBOOT_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTO_PORT: &str = "auto";
 
 #[derive(Parser)]
 #[command(name = "meshtastic-serial-udp")]
 #[command(about = "Bridge a USB-serial Meshtastic radio to UDP multicast (Meshtastic over LAN)")]
 #[command(version = concat!(env!("PKG_VERSION"), " (", env!("GIT_COMMIT"), ")"))]
 struct Cli {
-    /// Serial port path (e.g. /dev/ttyUSB0 or COM3)
-    #[arg(short, long)]
+    /// Serial port path (e.g. /dev/ttyUSB0, /dev/serial/by-id/..., or COM3), or "auto" to use the
+    /// first of /dev/serial/by-id/*, /dev/ttyACM* and /dev/ttyUSB* that answers the Meshtastic handshake
+    #[arg(short, long, default_value = AUTO_PORT)]
     port: String,
 
     /// Serial baud rate
@@ -101,11 +104,11 @@ fn main() {
     let mut mqtt_setup_attempted = false;
     let mut serial: Option<Box<dyn serialport::SerialPort>> = None;
     loop {
-        let port = match serial.take() {
-            Some(port) => port,
+        let (port, info) = match serial.take() {
+            Some(port) => (port, None),
             None => open_serial(&cli),
         };
-        match run_session(&cli, port, &udp_socket, &mut ingress, &mut mqtt_setup_attempted) {
+        match run_session(&cli, port, info, &udp_socket, &mut ingress, &mut mqtt_setup_attempted) {
             Ok(SessionEnd::RadioRebooted(port)) => serial = Some(port),
             Ok(SessionEnd::SerialLost(e)) => {
                 log::error!("serial connection lost: {e}; reconnecting");
@@ -123,15 +126,31 @@ fn main() {
     }
 }
 
-fn open_serial(cli: &Cli) -> Box<dyn serialport::SerialPort> {
+/// Open the serial port. In auto mode, also return the handshake result from the probe
+/// so the session does not repeat it.
+fn open_serial(cli: &Cli) -> (Box<dyn serialport::SerialPort>, Option<serial::RadioInfo>) {
     let mut delay = RECONNECT_DELAY;
+    if cli.port.is_empty() || cli.port == AUTO_PORT {
+        loop {
+            log::info!("looking for a Meshtastic radio at {} baud", cli.baud);
+            if let Some(found) = autodetect::detect(cli.baud, SERIAL_TIMEOUT) {
+                return (found.port, Some(found.info));
+            }
+            log::error!(
+                "no serial port answered the Meshtastic handshake; retrying in {delay:?} \
+                 (set --port to use a specific port)"
+            );
+            std::thread::sleep(delay);
+            delay = (delay * 2).min(MAX_REOPEN_DELAY);
+        }
+    }
     loop {
         log::info!("opening serial port {} at {} baud", cli.port, cli.baud);
         match serialport::new(&cli.port, cli.baud)
             .timeout(SERIAL_TIMEOUT)
             .open()
         {
-            Ok(port) => return port,
+            Ok(port) => return (port, None),
             Err(e) => {
                 log::error!("failed to open serial port {}: {e}; retrying in {delay:?}", cli.port);
                 std::thread::sleep(delay);
@@ -144,12 +163,18 @@ fn open_serial(cli: &Cli) -> Box<dyn serialport::SerialPort> {
 fn run_session(
     cli: &Cli,
     mut serial: Box<dyn serialport::SerialPort>,
+    info: Option<serial::RadioInfo>,
     udp_socket: &UdpSocket,
     ingress: &mut Ingress,
     mqtt_setup_attempted: &mut bool,
 ) -> std::io::Result<SessionEnd> {
-    log::info!("performing serial handshake...");
-    let info = serial::handshake(&mut *serial)?;
+    let info = match info {
+        Some(info) => info,
+        None => {
+            log::info!("performing serial handshake...");
+            serial::handshake(&mut *serial)?
+        }
+    };
     if info.region == meshtastic_proto::config::lo_ra_config::RegionCode::Unset as i32 {
         log::error!(
             "the radio has no LoRa region set, so it will not transmit or receive anything; \

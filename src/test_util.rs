@@ -7,11 +7,14 @@ use serialport::{
     ClearBuffer, DataBits, FlowControl, Parity, Result as SpResult, SerialPort, StopBits,
 };
 
+type Responder = Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
+
 /// A mock serial port backed by shared byte buffers for testing.
 pub struct MockSerialPort {
     read_buf: Arc<Mutex<VecDeque<u8>>>,
     write_buf: Arc<Mutex<Vec<u8>>>,
     timeout: Duration,
+    responder: Option<Responder>,
 }
 
 impl MockSerialPort {
@@ -20,6 +23,16 @@ impl MockSerialPort {
             read_buf: Arc::new(Mutex::new(VecDeque::new())),
             write_buf: Arc::new(Mutex::new(Vec::new())),
             timeout: Duration::from_millis(100),
+            responder: None,
+        }
+    }
+
+    /// A mock whose read buffer receives `respond(bytes)` after every write,
+    /// to act as a device that answers requests.
+    pub fn with_responder(respond: impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static) -> Self {
+        Self {
+            responder: Some(Arc::new(respond)),
+            ..Self::new()
         }
     }
 
@@ -54,6 +67,9 @@ impl io::Write for MockSerialPort {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut wb = self.write_buf.lock().unwrap();
         wb.extend_from_slice(buf);
+        if let Some(respond) = &self.responder {
+            self.read_buf.lock().unwrap().extend(respond(buf));
+        }
         Ok(buf.len())
     }
 
@@ -158,6 +174,7 @@ impl SerialPort for MockSerialPort {
             read_buf: Arc::clone(&self.read_buf),
             write_buf: Arc::clone(&self.write_buf),
             timeout: self.timeout,
+            responder: self.responder.clone(),
         }))
     }
 
