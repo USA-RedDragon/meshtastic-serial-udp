@@ -105,7 +105,7 @@ package_binary() {
     cat > "$root/control/control" <<EOF
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
-Depends: kmod-usb-acm, kmod-usb-serial-cp210x, kmod-usb-serial-ch341
+Depends: kmod-usb-acm
 Provides:
 Source: package/${PKG_NAME}
 Section: net
@@ -171,7 +171,7 @@ EOF
                 --info "origin:$PKG_NAME" \
                 --info "url:https://github.com/USA-RedDragon/meshtastic-serial-udp" \
                 --info "maintainer:jacob@mcswain.dev" \
-                --info "depends:kmod-usb-acm kmod-usb-serial-cp210x kmod-usb-serial-ch341" \
+                --info "depends:kmod-usb-acm" \
                 --script "post-install:/pkg/scripts/post-install" \
                 --script "pre-deinstall:/pkg/scripts/pre-deinstall" \
                 --script "post-upgrade:/pkg/scripts/post-upgrade" \
