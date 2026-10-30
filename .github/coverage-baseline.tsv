@@ -1,8 +1,9 @@
+src/autodetect.rs	300	276
 src/bridge.rs	502	371
 src/crypto.rs	185	170
-src/main.rs	117	0
+src/main.rs	130	0
 src/raven.rs	372	359
-src/serial.rs	494	386
+src/serial.rs	530	421
 src/serial_framing.rs	176	176
-src/test_util.rs	114	37
+src/test_util.rs	125	52
 src/udp.rs	58	40
