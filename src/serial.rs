@@ -87,6 +87,42 @@ pub fn handshake_with_timeout(
     serial: &mut dyn serialport::SerialPort,
     timeout: std::time::Duration,
 ) -> io::Result<RadioInfo> {
+    run_handshake(serial, timeout, None)
+}
+
+/// Time limits for probing a port that may not hold a Meshtastic radio.
+#[derive(Debug, Clone, Copy)]
+pub struct ProbeTimeouts {
+    /// How long to wait for the first valid FromRadio frame before giving up on the port.
+    pub first_frame: std::time::Duration,
+    /// How often to resend the same want_config_id request until the first frame arrives.
+    pub resend: std::time::Duration,
+    /// Limit for the whole handshake once the port has answered.
+    pub total: std::time::Duration,
+}
+
+pub const PROBE_TIMEOUTS: ProbeTimeouts = ProbeTimeouts {
+    first_frame: std::time::Duration::from_secs(6),
+    resend: std::time::Duration::from_secs(2),
+    total: HANDSHAKE_TIMEOUT,
+};
+
+/// Perform the handshake on a port that may not hold a Meshtastic radio.
+/// Writes only the want_config_id request. Gives up after `first_frame` unless
+/// the port sends a frame that decodes as a Meshtastic FromRadio message
+/// (an echo of the request does not count).
+pub fn probe(
+    serial: &mut dyn serialport::SerialPort,
+    timeouts: ProbeTimeouts,
+) -> io::Result<RadioInfo> {
+    run_handshake(serial, timeouts.total, Some(timeouts))
+}
+
+fn run_handshake(
+    serial: &mut dyn serialport::SerialPort,
+    timeout: std::time::Duration,
+    probe: Option<ProbeTimeouts>,
+) -> io::Result<RadioInfo> {
     let config_id: u32 = rand::random();
     log::info!("starting handshake with want_config_id={config_id}");
 
@@ -95,11 +131,14 @@ pub fn handshake_with_timeout(
             meshtastic_proto::to_radio::PayloadVariant::WantConfigId(config_id),
         ),
     };
-    let payload = to_radio.encode_to_vec();
-    let frame = serial_framing::frame_payload(&payload);
+    let request = to_radio.encode_to_vec();
+    let frame = serial_framing::frame_payload(&request);
     serial.write_all(&frame)?;
 
-    let deadline = std::time::Instant::now() + timeout;
+    let start = std::time::Instant::now();
+    let deadline = start + timeout;
+    let mut heard = probe.is_none();
+    let mut next_resend = probe.map(|p| start + p.resend);
     let mut reader = FrameReader::new();
     let mut buf = [0u8; 1];
     let mut info = RadioInfo {
@@ -109,11 +148,25 @@ pub fn handshake_with_timeout(
     let mut my_node_num: Option<u32> = None;
 
     loop {
-        if std::time::Instant::now() > deadline {
+        let now = std::time::Instant::now();
+        if now > deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "handshake timed out waiting for config_complete_id",
             ));
+        }
+        if let (false, Some(p)) = (heard, probe) {
+            if now > start + p.first_frame {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "no Meshtastic reply",
+                ));
+            }
+            if next_resend.is_some_and(|t| now >= t) {
+                log::debug!("no reply yet, resending want_config_id={config_id}");
+                serial.write_all(&frame)?;
+                next_resend = Some(now + p.resend);
+            }
         }
 
         match serial.read(&mut buf) {
@@ -126,7 +179,14 @@ pub fn handshake_with_timeout(
             Ok(_) => {
                 if let Some(payload) = reader.feed(buf[0]) {
                     match meshtastic_proto::FromRadio::decode(payload.as_slice()) {
+                        Ok(from_radio)
+                            if !heard
+                                && (payload == request || from_radio.payload_variant.is_none()) =>
+                        {
+                            log::debug!("probe: ignoring frame that is not a Meshtastic reply");
+                        }
                         Ok(from_radio) => {
+                            heard = true;
                             if let Some(variant) = from_radio.payload_variant {
                                 match variant {
                                     meshtastic_proto::from_radio::PayloadVariant::ConfigCompleteId(id) => {
@@ -202,6 +262,9 @@ pub fn handshake_with_timeout(
                                     }
                                 }
                             }
+                        }
+                        Err(e) if !heard => {
+                            log::debug!("probe: failed to decode FromRadio: {e}");
                         }
                         Err(e) => {
                             log::warn!("handshake: failed to decode FromRadio: {e}");
