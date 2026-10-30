@@ -18,7 +18,7 @@ This will bind Raven's multicast UDP listener to the loopback interface, allowin
 
 After adding the above configuration, `service raven restart` to apply the changes.
 
-We require `kmod-usb-acm` to be installed for the appropriate USB-serial drivers. You can install it with `opkg install kmod-usb-acm`.
+The package depends on the USB-serial drivers for common Meshtastic radios: `kmod-usb-acm` (native USB, `/dev/ttyACM*`), and `kmod-usb-serial-cp210x` and `kmod-usb-serial-ch341` (USB-to-serial chips, `/dev/ttyUSB*`). The package manager installs them with the package.
 
 Then, the relevant .ipk/.apk file for your device can be found on the [releases page](https://github.com/USA-RedDragon/meshtastic-serial-udp/releases/latest). After installation, this service should start right away. You can check its status with `service meshtastic-serial-udp status` and view logs with `logread -e meshtastic-serial-udp`. After plugging in and powering on your Meshtastic radio, this program finds it on its own (see [Choosing the serial port](#choosing-the-serial-port)), performs the serial handshake, and starts relaying packets between the radio and the local network.
 
@@ -40,7 +40,7 @@ PORT=/dev/serial/by-id/usb-RAKwireless_WisCore_RAK4631_Board_0123456789ABCDEF-if
 
 Set a fixed port if other serial devices are connected and you do not want the bridge to send them the probe request. Opening a serial port can reset some boards, for example ESP32 and Arduino boards with a USB-to-serial chip.
 
-Radios that show up as `/dev/ttyUSB*` need the kernel driver for their USB-to-serial chip, for example `kmod-usb-serial-cp210x` or `kmod-usb-serial-ch341`. The package only installs `kmod-usb-acm`, which covers radios that show up as `/dev/ttyACM*`.
+Radios with a USB-to-serial chip other than CP210x or CH340 show up as `/dev/ttyUSB*` only after you install the kernel driver for that chip.
 
 ### Upgrading from an older version
 
